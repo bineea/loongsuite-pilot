@@ -2295,3 +2295,147 @@ describe('hook-processor merges intercept data into llm events', () => {
     expect(fs.existsSync(staleFile)).toBe(false);
   });
 });
+
+test('原生编辑差异通过 hook 输出并可供统一处理器测量', async () => {
+  const transcriptPath = writeTranscript('code-evidence', [
+    {
+      type: 'user',
+      promptId: 'p',
+      timestamp: '2026-06-04T02:57:30.000Z',
+      message: { content: 'edit' },
+    },
+    {
+      type: 'assistant',
+      timestamp: '2026-06-04T02:57:32.000Z',
+      message: {
+        id: 'm',
+        content: [
+          {
+            type: 'tool_use',
+            id: 't',
+            name: 'Edit',
+            input: { file_path: 'a', old_string: 'old', new_string: 'new' },
+          },
+        ],
+        usage: { input_tokens: 1, output_tokens: 1 },
+        stop_reason: 'tool_use',
+      },
+    },
+    {
+      type: 'user',
+      timestamp: '2026-06-04T02:57:33.000Z',
+      message: {
+        content: [{ type: 'tool_result', tool_use_id: 't', content: 'edited' }],
+      },
+      toolUseResult: {
+        filePath: 'a',
+        structuredPatch: [{ lines: ['-old', '+new'] }],
+        originalFile: 'private original',
+        unrelatedSecret: 'hidden',
+      },
+    },
+    {
+      type: 'assistant',
+      timestamp: '2026-06-04T02:57:34.000Z',
+      message: {
+        id: 'final',
+        content: [{ type: 'text', text: 'done' }],
+        usage: { input_tokens: 1, output_tokens: 1 },
+        stop_reason: 'end_turn',
+      },
+    },
+  ]);
+  expect(
+    runHook('stop', {
+      session_id: 'code-evidence',
+      stop_reason: 'end_turn',
+      transcript_path: transcriptPath,
+    }).status,
+  ).toBe(0);
+  const records = readJsonlRecords();
+  const result = records.find(
+    (record) => record['event.name'] === 'tool.result',
+  );
+  expect(result['gen_ai.tool.call.result']).toEqual({
+    filePath: 'a',
+    structuredPatch: [{ lines: ['-old', '+new'] }],
+    output: 'edited',
+  });
+  const { CodeChangeProcessor } = await import(
+    '../../../../src/normalization/code-change-processor.ts'
+  );
+  new CodeChangeProcessor().enrich(records);
+  expect(result['gen_ai.code.lines_added']).toBe(1);
+  expect(result['gen_ai.code.lines_deleted']).toBe(1);
+});
+
+test('Write 创建空 structuredPatch 经真实 hook 测量内容行数', async () => {
+  const transcriptPath = writeTranscript('write-evidence', [
+    {
+      type: 'user',
+      promptId: 'p',
+      timestamp: '2026-06-04T02:57:30.000Z',
+      message: { content: 'write' },
+    },
+    {
+      type: 'assistant',
+      timestamp: '2026-06-04T02:57:32.000Z',
+      message: {
+        id: 'm',
+        content: [
+          {
+            type: 'tool_use',
+            id: 't',
+            name: 'Write',
+            input: { file_path: 'a', content: 'a\n\nb\n' },
+          },
+        ],
+        usage: { input_tokens: 1, output_tokens: 1 },
+        stop_reason: 'tool_use',
+      },
+    },
+    {
+      type: 'user',
+      timestamp: '2026-06-04T02:57:33.000Z',
+      message: {
+        content: [
+          { type: 'tool_result', tool_use_id: 't', content: 'created' },
+        ],
+      },
+      toolUseResult: {
+        filePath: 'a',
+        type: 'create',
+        content: 'a\n\nb\n',
+        structuredPatch: [],
+      },
+    },
+    {
+      type: 'assistant',
+      timestamp: '2026-06-04T02:57:34.000Z',
+      message: {
+        id: 'final',
+        content: [{ type: 'text', text: 'done' }],
+        usage: { input_tokens: 1, output_tokens: 1 },
+        stop_reason: 'end_turn',
+      },
+    },
+  ]);
+  expect(
+    runHook('stop', {
+      session_id: 'write-evidence',
+      stop_reason: 'end_turn',
+      transcript_path: transcriptPath,
+    }).status,
+  ).toBe(0);
+  const records = readJsonlRecords();
+  const { CodeChangeProcessor } = await import(
+    '../../../../src/normalization/code-change-processor.ts'
+  );
+  new CodeChangeProcessor().enrich(records);
+  const result = records.find(
+    (record) => record['event.name'] === 'tool.result',
+  );
+  expect(result['gen_ai.code.lines_added']).toBe(3);
+  expect(result['gen_ai.code.lines_deleted']).toBe(0);
+  expect(result['gen_ai.code.files_changed']).toBe(1);
+});

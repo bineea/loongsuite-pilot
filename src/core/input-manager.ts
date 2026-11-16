@@ -20,6 +20,7 @@ import { loadMaskPlan } from '../mask/rule-loader.js';
 import type { MaskPlan } from '../mask/types.js';
 import type { TraceLinker } from './upstream-link/trace-linker.js';
 import type { MultimodalProcessor } from '../multimodal/processor.js';
+import { CodeChangeProcessor } from '../normalization/code-change-processor.js';
 import { TurnBoundaryProcessor } from '../normalization/turn-boundary-processor.js';
 import { applyInvocationIdentity } from '../normalization/invocation-identity.js';
 import { expandAgentInputEvents } from '../normalization/agent-input-dual-write.js';
@@ -100,6 +101,7 @@ export class InputManager extends EventEmitter {
   private interceptResultLinker: InterceptResultLinker | null = null;
   private multimodalProcessor: MultimodalProcessor | null = null;
   private readonly turnBoundaryProcessor = new TurnBoundaryProcessor();
+  private readonly codeChangeProcessor = new CodeChangeProcessor();
 
   private workspacePolicy = new WorkspacePolicy();
 
@@ -423,6 +425,7 @@ export class InputManager extends EventEmitter {
       }
     }
 
+    this.codeChangeProcessor.enrich(entries);
     this.applyIdentity(entries);
 
     // Fill-only lifecycle enrichment. It never changes record order/count or
@@ -465,6 +468,7 @@ export class InputManager extends EventEmitter {
       });
     }
 
+    this.codeChangeProcessor.enrich(entries);
     this.applyIdentity(entries);
     const prepared = this.applyMask(entries);
     let outputBatchBytes = 0;

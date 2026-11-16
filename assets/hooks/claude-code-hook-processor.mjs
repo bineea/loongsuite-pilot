@@ -1533,7 +1533,7 @@ function buildTurnRecords(
           'gen_ai.step.id': owner.stepId,
           'gen_ai.tool.name': toolName,
           'gen_ai.tool.call.id': toolId,
-          'gen_ai.tool.call.result': toJsonValue(timestamps.resultContent || ''),
+          'gen_ai.tool.call.result': toJsonValue(timestamps.codeChangeEvidence ? { ...timestamps.codeChangeEvidence, output: timestamps.resultContent || '' } : timestamps.resultContent || ''),
           'tool.result.status': timestamps.isError ? 'error' : 'success',
           ...skillFields,
         };

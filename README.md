@@ -1,5 +1,7 @@
 # LoongSuite Pilot
 
+This fork adds [per-agent file line change metrics](docs/zh-CN/code-line-metrics.md): confirmed additions/deletions and explicit unmeasured operations, with today/7-day/30-day dashboard summaries. Token usage is never converted into code volume.
+
 ![LoongSuite](docs/_assets/img/loongsuite-logo.png)
 
 **Local telemetry collector for AI coding agents**

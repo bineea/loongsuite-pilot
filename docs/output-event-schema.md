@@ -160,6 +160,11 @@ Required levels follow OpenTelemetry wording:
 | `gen_ai.tool.call.exec.id` | string | Recommended | Tool execution-side ID. |
 | `gen_ai.tool.call.arguments` | json | When available | Tool call arguments. May contain sensitive content. |
 | `gen_ai.tool.call.result` | json | When available | Tool result payload. May contain sensitive content. |
+| `gen_ai.code.change_status` | string | When evaluated on `tool.result` | Pilot extension: `measured`, `unmeasured`, `failed`, or `not_applicable`. Missing evidence is not zero output. |
+| `gen_ai.code.lines_added` | int | Only when `measured` | Nonnegative count of added physical text lines from confirmed edit evidence; includes blank lines and comments. |
+| `gen_ai.code.lines_deleted` | int | Only when `measured` | Nonnegative count of deleted physical text lines from confirmed edit evidence. |
+| `gen_ai.code.files_changed` | int | Only when `measured` | Number of files affected by this operation; summing counts file edits, not distinct files across operations. |
+| `gen_ai.code.change_reason` | string | When evidence is unavailable or operation failed | Stable diagnostic reason; no source code. These are Pilot extensions, not standard OpenTelemetry semantic conventions. |
 | `gen_ai.tool.call.duration` | int | Recommended | Positive tool execution duration in milliseconds, computed from the matched result boundary minus the call boundary. Omit it when either boundary is unavailable or the difference is not positive. |
 | `gen_ai.skill.name` | string | Conditionally Required for `skill.use` | Skill or extension capability name. |
 | `gen_ai.skill.id` | string | Recommended when skill identity is available | Stable skill identifier. |

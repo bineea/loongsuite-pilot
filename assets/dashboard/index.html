@@ -19,6 +19,17 @@
     }
 
     * { box-sizing: border-box; }
+    .code-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .code-heading h2 { margin-bottom: 0; }
+    .code-table-wrap { overflow-x: auto; margin-top: 16px; }
+    .code-table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+    .code-table th, .code-table td { padding: 13px 10px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+    .code-table th { color: var(--muted); font-size: 12px; font-weight: 500; }
+    .code-table th:first-child, .code-table td:first-child { text-align: left; }
+    .code-table .code-added { color: var(--accent); }
+    .code-table .code-deleted { color: #fda4af; }
+    .code-table .code-unknown { color: var(--warn); }
+    .code-note { color: var(--muted); font-size: 12px; line-height: 1.7; margin: 12px 0 0; }
     body {
       margin: 0;
       min-height: 100vh;
@@ -127,6 +138,19 @@
       <div class="card"><div class="label" data-i18n="todayToolCalls">今日 Tool Call</div><div id="tools" class="value">--</div><div class="subvalue" data-i18n="toolCalls">工具调用数</div></div>
     </section>
 
+    <section class="section panel">
+      <div class="code-heading">
+        <h2 data-i18n="codeChangesHeading">AI 文件增删行 · 按 Agent</h2>
+        <select id="code-range" data-i18n-aria-label="codeRangeLabel" aria-label="代码统计时间范围">
+          <option value="today" data-i18n="codeRangeToday">今日</option>
+          <option value="sevenDays" data-i18n="codeRangeWeek">最近 7 天</option>
+          <option value="thirtyDays" data-i18n="codeRangeMonth">最近 30 天</option>
+        </select>
+      </div>
+      <div id="code-changes" class="code-table-wrap" aria-live="polite"></div>
+      <p class="code-note" data-i18n="codeChangesNote">统计有成功编辑证据的文本文件物理行，含空行、注释及配置/文档；重复修改累计计数。未测量表示缺少差异证据，不等于没有产出。文件数为修改次数。</p>
+    </section>
+
     <section class="section">
       <h2 data-i18n="agentDistribution">Agent 分布</h2>
       <div id="agent-grid" class="agent-grid"></div>
@@ -169,6 +193,20 @@
         llmRequests: 'LLM 请求数',
         toolCalls: '工具调用数',
         agentDistribution: 'Agent 分布',
+        codeChangesHeading: 'AI 文件增删行 · 按 Agent',
+        codeRangeLabel: '代码统计时间范围',
+        codeRangeToday: '今日',
+        codeRangeWeek: '最近 7 天',
+        codeRangeMonth: '最近 30 天',
+        codeAdded: '新增行',
+        codeDeleted: '删除行',
+        codeNet: '净增行',
+        codeFiles: '文件修改次数',
+        codeMeasured: '已测量操作',
+        codeUnmeasured: '未测量操作',
+        codeFailed: '失败 / 取消',
+        noCodeData: '尚无代码编辑统计；旧采集器或缺少编辑证据的记录无法确认代码量。',
+        codeChangesNote: '统计有成功编辑证据的文本文件物理行，含空行、注释及配置/文档；重复修改累计计数。未测量表示缺少差异证据，不等于没有产出。文件数为修改次数。',
         tokenTrendHeading: '最近 30 天 Token',
         sessionTrendHeading: '最近 30 天 Session',
         modelDistribution: '模型分布',
@@ -216,6 +254,20 @@
         llmRequests: 'LLM requests',
         toolCalls: 'Tool calls',
         agentDistribution: 'Agent Distribution',
+        codeChangesHeading: 'AI File Line Changes · By Agent',
+        codeRangeLabel: 'Code metrics time range',
+        codeRangeToday: 'Today',
+        codeRangeWeek: 'Last 7 days',
+        codeRangeMonth: 'Last 30 days',
+        codeAdded: 'Added lines',
+        codeDeleted: 'Deleted lines',
+        codeNet: 'Net lines',
+        codeFiles: 'File edits',
+        codeMeasured: 'Measured operations',
+        codeUnmeasured: 'Unmeasured operations',
+        codeFailed: 'Failed / cancelled',
+        noCodeData: 'No code edit metrics yet. Older collectors or records without edit evidence cannot establish code volume.',
+        codeChangesNote: 'Physical text lines from confirmed edits, including blank lines, comments, configuration and documentation. Repeated edits accumulate. Unmeasured means missing diff evidence, not zero output. File edits count repeated changes.',
         tokenTrendHeading: 'Tokens · Last 30 Days',
         sessionTrendHeading: 'Sessions · Last 30 Days',
         modelDistribution: 'Model Distribution',
@@ -291,6 +343,7 @@
     let refreshMs = DEFAULT_REFRESH_MS;
     let refreshTimer;
     let currentSummary = null;
+    let codeRange = 'today';
     let viewState = { kind: 'connecting' };
     const $ = (id) => document.getElementById(id);
 
@@ -481,6 +534,27 @@
       `).join('') : `<div class="empty">${escapeHtml(translate('noRepositoryData'))}</div>`;
     }
 
+    function renderCodeChanges(summary) {
+      const changes = summary.ranges?.[codeRange]?.codeChanges;
+      if (!Array.isArray(changes) || !changes.length) {
+        $('code-changes').innerHTML = `<div class="empty">${escapeHtml(translate('noCodeData'))}</div>`;
+        return;
+      }
+      const headers = ['codeAdded', 'codeDeleted', 'codeNet', 'codeFiles', 'codeMeasured', 'codeUnmeasured', 'codeFailed'];
+      const signed = value => value > 0 ? `+${count(value)}` : value < 0 ? `−${count(-value)}` : count(0);
+      $('code-changes').innerHTML = `<table class="code-table"><thead><tr><th scope="col">Agent</th>${headers.map(key => `<th scope="col">${escapeHtml(translate(key))}</th>`).join('')}</tr></thead><tbody>${changes.map(entry => {
+        const measured = Number(entry.measuredOperations) > 0;
+        return `<tr><th scope="row">${escapeHtml(entry.agentType)}</th>
+          <td class="code-added">${measured ? signed(entry.addedLines) : '—'}</td>
+          <td class="code-deleted">${measured ? signed(-entry.deletedLines) : '—'}</td>
+          <td>${measured ? signed(entry.addedLines - entry.deletedLines) : '—'}</td>
+          <td>${measured ? count(entry.filesChanged) : '—'}</td>
+          <td>${count(entry.measuredOperations)}</td>
+          <td class="${Number(entry.unmeasuredOperations) > 0 ? 'code-unknown' : ''}">${count(entry.unmeasuredOperations)}</td>
+          <td>${count(entry.failedOperations)}</td></tr>`;
+      }).join('')}</tbody></table>`;
+    }
+
     function renderSummary(summary) {
       const today = summary.ranges.today;
       $('tokens').textContent = tokenCount(today.totalTokens);
@@ -488,6 +562,7 @@
       $('sessions').textContent = count(today.totalSessions);
       $('requests').textContent = count(today.totalRequests);
       $('tools').textContent = count(today.totalToolCalls);
+      renderCodeChanges(summary);
       // Agent cards are intentionally derived only from agentShares. New agent
       // types therefore appear without a dashboard code change.
       renderAgents(Array.isArray(today.agentShares) ? today.agentShares : []);
@@ -557,6 +632,12 @@
 
     $('language-select').addEventListener('change', (event) => {
       applyLanguage(event.target.value, true);
+    });
+
+    $('code-range').addEventListener('change', event => {
+      if (!['today', 'sevenDays', 'thirtyDays'].includes(event.target.value)) return;
+      codeRange = event.target.value;
+      if (currentSummary) renderCodeChanges(currentSummary);
     });
 
     applyLanguage(currentLanguage);

@@ -6,6 +6,7 @@ import { writeJsonFile, readJsonFile, ensureDir, getTodayDateString } from '../u
 import { createLogger } from '../utils/logger.js';
 import { scanJsonlTail } from './jsonl-tail-reader.js';
 import { LOCAL_LOG_EMERGENCY_FILE_BYTES } from '../utils/segmented-jsonl-writer.js';
+import { refreshCodeChanges, type CodeChangeSummaryEntry } from './code-change-summary.js';
 
 const logger = createLogger('MetricsSummaryWriter');
 
@@ -16,6 +17,7 @@ const FILE_NAME_PATTERN = /^(.+)-(\d{4}-\d{2}-\d{2})\.jsonl$/;
 // ── Public types (metrics-summary.json shape) ──
 
 export interface MetricsSummaryRangeData {
+  codeChanges: CodeChangeSummaryEntry[];
   totalTokens: number;
   inputTokens: number;
   outputTokens: number;
@@ -303,6 +305,16 @@ export class MetricsSummaryWriter {
 
     // Build summary from digest + live data
     const summary = this.buildSummary(digest, todayLive, today);
+    try {
+      const codeChanges = await refreshCodeChanges(
+        path.join(this.dataDir, 'cache', 'metrics-code-changes.json'), files, today,
+      );
+      summary.ranges.today.codeChanges = codeChanges(today);
+      summary.ranges.sevenDays.codeChanges = codeChanges(dateDaysAgo(6, today));
+      summary.ranges.thirtyDays.codeChanges = codeChanges(dateDaysAgo(29, today));
+    } catch (error) {
+      logger.warn('metrics code changes refresh failed', { error: String(error) });
+    }
 
     // Persist source-of-truth before the derived summary. Each state file is
     // written atomically; after a crash, replay starts from the last committed
@@ -700,6 +712,7 @@ export class MetricsSummaryWriter {
       agentShares,
       providerShares,
       repoShares,
+      codeChanges: [],
     };
   }
 
