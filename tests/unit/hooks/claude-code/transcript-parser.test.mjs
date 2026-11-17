@@ -454,3 +454,110 @@ describe('deduplicateContentBlocks', () => {
     expect(result[2].type).toBe('tool_use');
   });
 });
+
+test('仅保留原生修改必要证据，不复制其他 transcript 字段', () => {
+  const file = path.join(TMP, 'edit.jsonl');
+  writeJsonl(file, [
+    {
+      type: 'user',
+      promptId: 'p',
+      timestamp: '2026-06-04T02:57:30.000Z',
+      message: { content: 'edit' },
+    },
+    {
+      type: 'assistant',
+      timestamp: '2026-06-04T02:57:32.000Z',
+      message: {
+        id: 'm',
+        content: [
+          {
+            type: 'tool_use',
+            id: 't',
+            name: 'Edit',
+            input: { file_path: 'a', old_string: 'old', new_string: 'new' },
+          },
+        ],
+      },
+    },
+    {
+      type: 'user',
+      timestamp: '2026-06-04T02:57:33.000Z',
+      message: {
+        content: [{ type: 'tool_result', tool_use_id: 't', content: 'edited' }],
+      },
+      toolUseResult: {
+        filePath: 'a',
+        structuredPatch: [
+          { oldStart: 1, lines: ['-old', '+new'], secret: 'hidden' },
+        ],
+        originalFile: 'private',
+        otherSecret: 'hidden',
+      },
+    },
+  ]);
+  const detail = parseClaudeTranscript(
+    file,
+    0,
+  ).turns[0].llmCalls[0].toolDetails.get('t');
+  expect(detail.codeChangeEvidence).toEqual({
+    filePath: 'a',
+    structuredPatch: [{ lines: ['-old', '+new'] }],
+  });
+});
+
+test('Write 创建保留 type/content，多个结果不共享原生证据', () => {
+  const file = path.join(TMP, 'create.jsonl');
+  const records = [
+    {
+      type: 'user',
+      promptId: 'p',
+      timestamp: '2026-06-04T02:57:30.000Z',
+      message: { content: 'create' },
+    },
+    {
+      type: 'assistant',
+      timestamp: '2026-06-04T02:57:32.000Z',
+      message: {
+        id: 'm',
+        content: [
+          {
+            type: 'tool_use',
+            id: 't',
+            name: 'Write',
+            input: { file_path: 'a', content: 'new\n' },
+          },
+        ],
+      },
+    },
+    {
+      type: 'user',
+      timestamp: '2026-06-04T02:57:33.000Z',
+      message: {
+        content: [
+          { type: 'tool_result', tool_use_id: 't', content: 'created' },
+        ],
+      },
+      toolUseResult: {
+        filePath: 'a',
+        type: 'create',
+        content: 'new\n',
+        structuredPatch: [],
+      },
+    },
+  ];
+  writeJsonl(file, records);
+  expect(
+    parseClaudeTranscript(file, 0).turns[0].llmCalls[0].toolDetails.get('t')
+      .codeChangeEvidence,
+  ).toEqual({ filePath: 'a', type: 'create', content: 'new\n' });
+  records[2].message.content.push({
+    type: 'tool_result',
+    tool_use_id: 'other',
+    content: 'another result',
+  });
+  writeJsonl(file, records);
+  expect(
+    parseClaudeTranscript(file, 0).turns[0].llmCalls[0].toolDetails.get('t')
+      .codeChangeEvidence,
+  ).toBeUndefined();
+});

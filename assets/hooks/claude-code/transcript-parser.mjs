@@ -24,6 +24,20 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 
 export const MAX_TRANSCRIPT_BYTES = 50 * 1024 * 1024; // 50 MB safety limit
+// 仅选取修改差异或明确创建证据，避免复制原始 transcript 附带的其他内容。
+function codeChangeEvidence(native) {
+  if (!native || typeof native !== 'object') return undefined;
+  const evidence = {};
+  if (typeof native.filePath === 'string') evidence.filePath = native.filePath;
+  if (native.type === 'create' && typeof native.content === 'string') {
+    return { ...evidence, type: 'create', content: native.content };
+  }
+  if (Array.isArray(native.structuredPatch)) {
+    evidence.structuredPatch = native.structuredPatch.map(hunk => ({ lines: hunk?.lines }));
+    return evidence;
+  }
+  return undefined;
+}
 const MISSING_PROMPT_ID = '__missing_prompt_id__';
 
 // Claude Code 加载 skill 后,会以 isMeta user 记录注入 SKILL.md 内容,
@@ -207,7 +221,8 @@ export function parseClaudeTranscript(transcriptPath, byteOffset = 0) {
   const assistantGroups = new Map(); // message.id → group
   const conversationRecords = []; // [{ type:'user'|'assistant', ... }]
   const toolResultTimestamps = new Map(); // tool_use_id → ISO8601 timestamp
-  const toolResultContents = new Map(); // tool_use_id → result content
+  const toolResultContents = new Map();
+  const toolChangeEvidence = new Map(); // tool_use_id → result content
   const toolResultErrors = new Map(); // tool_use_id → boolean (is_error)
   const subagentInfoByToolId = new Map(); // Agent tool_use_id → { agentId, agentType }
   const skillToolsById = new Map(); // Skill tool_use_id → { name, promptId }
@@ -344,6 +359,9 @@ export function parseClaudeTranscript(transcriptPath, byteOffset = 0) {
             if (recordTs) toolResultTimestamps.set(part.tool_use_id, recordTs);
             const resultContent = part.content || part.output || part.result || '';
             toolResultContents.set(part.tool_use_id, resultContent);
+            const resultCount = userContent.filter(block => block?.type === 'tool_result').length;
+            const evidence = resultCount === 1 ? codeChangeEvidence(record.toolUseResult) : undefined;
+            if (evidence) toolChangeEvidence.set(part.tool_use_id, evidence);
             if (part.is_error) toolResultErrors.set(part.tool_use_id, true);
             const agentId = record.toolUseResult?.agentId || record.toolUseResult?.agent_id;
             if (agentId) {
@@ -446,6 +464,7 @@ export function parseClaudeTranscript(transcriptPath, byteOffset = 0) {
           call: callTs,
           result: resultTs,
           resultContent,
+          codeChangeEvidence: toolChangeEvidence.get(toolId),
           isError,
           ...(subagentInfo || {}),
         });

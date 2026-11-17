@@ -1,5 +1,7 @@
 # LoongSuite Pilot
 
+This fork adds [per-agent file line change metrics](docs/zh-CN/code-line-metrics.md): confirmed additions/deletions and explicit unmeasured operations, with custom start/end dates in the dashboard. Token usage is never converted into code volume.
+
 ![LoongSuite](docs/_assets/img/loongsuite-logo.png)
 
 **Local telemetry collector for AI coding agents**
@@ -48,6 +50,20 @@ Pilot is designed to answer practical questions:
 | Privacy controls         | Supports per-agent content capture policy and secret masking before output.        |
 | Local operations         | Provides service status, restart, rollback, and a built-in local dashboard. |
 
+
+## Fork Enhancement: File Line Changes by Agent
+
+In the local dashboard, open **AI File Line Changes · By Agent** and choose start and end dates to compare additions, deletions, net lines, file edits, and measured, unmeasured, and failed operations for Codex, Claude Code, and other agents with supported evidence.
+
+- **Dates:** Both endpoints are inclusive; equal dates select one day. The default is the collector's current date, with that date and the preceding 200 days available. This filter applies only to the file line change table; token widgets retain their labeled periods.
+- **Counting:** Counts physical text lines from confirmed successful edits, including blank lines, comments, configuration, and documentation. Repeated edits accumulate. These are neither final retained Git lines nor estimates derived from tokens.
+- **Supported evidence:** Successful Codex standalone `apply_patch` `Update File` patches; Claude Code `Edit` native `structuredPatch` results; and `Write` results with explicit creation evidence or an overwrite diff. Other agents need equivalent recognized evidence; collection support alone does not imply line-count support.
+- **Unmeasured operations:** Shell / Bash / PowerShell, edits nested inside code-mode `exec`, and operations without complete diff evidence cannot be reliably counted. Codex `Add File`, `Move to`, and whole-file deletion also require evidence beyond a success status. A dash means no measured operations, not zero output.
+- **History:** Missing diffs in older logs cannot be reconstructed, and dates without collection records cannot be backfilled.
+
+**Installing this enhancement:** The default installation commands in this README target upstream releases and do not establish that this fork's changes are included. Build and package the [fork enhancement branch](https://github.com/bineea/loongsuite-pilot/tree/feat/agent-code-line-metrics), deploy it through the installer, update agent hooks, and restart the collector. Pulling or building source alone does not update the installed service. Back up existing configuration and retain the previous version for rollback.
+
+See the [line-change guide (Chinese)](docs/zh-CN/code-line-metrics.md) for evidence limits, summary data structures, and build validation steps.
 
 ## Supported Agents
 

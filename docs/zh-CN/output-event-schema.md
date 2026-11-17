@@ -157,6 +157,11 @@ Codex 子线程始终保留自身 session/turn/step；同 Trace 可以包含多�
 | `gen_ai.tool.call.exec.id` | string | Recommended | 工具执行侧 ID。 |
 | `gen_ai.tool.call.arguments` | json | 可获取时 | 工具调用参数，可能包含敏感内容。 |
 | `gen_ai.tool.call.result` | json | 可获取时 | 工具结果 payload，可能包含敏感内容。 |
+| `gen_ai.code.change_status` | string | 对 `tool.result` 完成评估时 | Pilot 扩展：`measured`（已测量）、`unmeasured`（缺少证据）、`failed`（失败/取消）、`not_applicable`（非文件编辑）。缺少证据不表示零产出。 |
+| `gen_ai.code.lines_added` | int | 仅 `measured` 时 | 成功编辑证据中的新增物理行数，非负整数，含空行、注释和文本配置/文档。 |
+| `gen_ai.code.lines_deleted` | int | 仅 `measured` 时 | 成功编辑证据中的删除物理行数，非负整数。 |
+| `gen_ai.code.files_changed` | int | 仅 `measured` 时 | 本次操作修改的文件数；累加后是文件修改次数，不是跨操作去重文件数。 |
+| `gen_ai.code.change_reason` | string | 缺少证据或失败时 | 稳定的诊断原因，不包含源码。以上是 Pilot 扩展，不属于 OpenTelemetry 标准语义约定。 |
 | `gen_ai.tool.call.duration` | int | Recommended | 使用匹配的 result 边界减去 call 边界得到的正数工具执行耗时，单位毫秒；任一边界缺失或差值非正时省略。 |
 | `gen_ai.guardrail.triggered` | boolean | 命中内存拦截判定时 Required | 固定为 `true`。没有 tool call id、没有记录、记录已过期，或 interceptor 未开启时省略。 |
 | `gen_ai.guardrail.action` | string | 与 `gen_ai.guardrail.triggered` 同时出现 | 可选值只有 `allow` 和 `block`。`tool.call` 查 `PreToolUse`，`tool.result` 查 `PostToolUse`。被拦截的 Qoder 用户提示补写的 `llm.request` 为 `block`。工具事件查不到时两个字段都不写。 |

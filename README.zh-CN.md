@@ -38,6 +38,8 @@ Pilot 主要帮助回答这些问题：
 
 ## 核心亮点
 
+本 fork 增加了[按 Agent 统计实际文件增删行](docs/zh-CN/code-line-metrics.md)：从成功编辑证据提取新增、删除行，并在看板按自选开始、结束日期汇总。无法测量的工具调用单独标记，不从 Token 估算代码量。
+
 | 能力 | Pilot 做什么 |
 |------|-------------|
 | Agent 发现 | 通过本地路径和命令检测支持的 Agent。 |
@@ -46,6 +48,20 @@ Pilot 主要帮助回答这些问题：
 | 多目标输出 | 支持 JSONL、阿里云 SLS、HTTP 和 OTLP Trace。 |
 | 隐私控制 | 支持按 Agent 控制内容采集，并在输出前进行密钥脱敏。 |
 | 本地运维 | 提供状态查看、重启、回滚和内置本地 Dashboard。 |
+
+## 本 fork 增强：按 Agent 统计文件增删行
+
+打开本地 Dashboard 的“AI 文件增删行 · 按 Agent”，选择开始和结束日期，即可分别查看 Codex、Claude Code 等 Agent 的新增行、删除行、净增行、文件修改次数，以及已测量、未测量和失败操作数。
+
+- **日期范围**：包含首尾两天，同一天可查询单日；默认选择采集器当前日期，支持当前日期及此前 200 天。筛选只作用于文件增删行表，Token 等指标仍按各自标示的时间范围展示。
+- **统计口径**：仅累计成功编辑且有差异证据的文本文件物理行，包含空行、注释、配置和文档；重复修改累计计数，不代表最终 Git 留存代码量，也不从 Token 换算。
+- **当前支持**：Codex 独立 `apply_patch` 的 `Update File` 成功补丁；Claude Code `Edit` 的原生 `structuredPatch`，以及 `Write` 的明确创建结果或覆盖差异。其他 Agent 需要提供可识别的同类证据，接入采集不等于已支持其代码行统计。
+- **未测量**：Shell / Bash / PowerShell、嵌套在 code-mode `exec` 中的编辑，以及缺少完整差异的操作无法可靠计数。Codex 的 `Add File`、`Move to` 和整文件删除也不能仅凭成功状态确定增删行。表中“—”表示没有已测量操作，不等于零产出。
+- **历史数据**：旧日志未保留的差异无法追溯补算；没有采集记录的日期也无法补齐。
+
+**安装增强版**：本 README 的默认安装命令指向上游发行版，不能据此确认包含本 fork 的增强。请使用[本 fork 的增强分支](https://github.com/bineea/loongsuite-pilot/tree/feat/agent-code-line-metrics)构建、打包并通过安装器部署，同时更新 Agent Hook、重启采集服务。仅拉取源码或运行构建不会更新本机服务。现有安装应先备份配置并保留旧版本用于回滚。
+
+详细支持边界、汇总数据结构和构建验证步骤见[文件增删行统计说明](docs/zh-CN/code-line-metrics.md)。
 
 ## 支持的 Agent
 
