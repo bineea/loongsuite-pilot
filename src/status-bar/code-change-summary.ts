@@ -15,6 +15,14 @@ export interface CodeChangeSummaryEntry {
   failedOperations: number;
 }
 
+export interface CodeChangeHistory {
+  startDate: string;
+  endDate: string;
+  days: Array<{ day: string; codeChanges: CodeChangeSummaryEntry[] }>;
+}
+
+type CodeChangeQuery = ((start: string) => CodeChangeSummaryEntry[]) & { history: CodeChangeHistory };
+
 interface Observation {
   day: string;
   agentType: string;
@@ -34,7 +42,7 @@ interface CodeState {
 /** 游标与已观察结果在同一个原子文件提交，重放和缓存升级都保持幂等。 */
 export async function refreshCodeChanges(
   cachePath: string, files: string[], today: string,
-): Promise<(start: string) => CodeChangeSummaryEntry[]> {
+): Promise<CodeChangeQuery> {
   const loaded = await readJsonFile<CodeState>(cachePath);
   const state: CodeState = loaded?.version === 1 && loaded.files && loaded.observations
     ? loaded : { version: 1, files: {}, observations: {} };
@@ -82,24 +90,49 @@ export async function refreshCodeChanges(
   }
   await ensureDir(path.dirname(cachePath));
   await writeJsonFile(cachePath, state);
-  return start => {
+  const byDay = new Map<string, Map<string, CodeChangeSummaryEntry>>();
+  for (const observation of Object.values(state.observations)) {
+    if (observation.day < cutoff || observation.day > today) continue;
+    const agents = byDay.get(observation.day) ?? new Map<string, CodeChangeSummaryEntry>();
+    byDay.set(observation.day, agents);
+    const entry = agents.get(observation.agentType) ?? {
+      agentType: observation.agentType, addedLines: 0, deletedLines: 0, filesChanged: 0,
+      measuredOperations: 0, unmeasuredOperations: 0, failedOperations: 0,
+    };
+    entry.addedLines += observation.added;
+    entry.deletedLines += observation.deleted;
+    entry.filesChanged += observation.files;
+    if (observation.status === 'measured') entry.measuredOperations++;
+    if (observation.status === 'unmeasured') entry.unmeasuredOperations++;
+    if (observation.status === 'failed') entry.failedOperations++;
+    agents.set(entry.agentType, entry);
+  }
+  // 只发布按日数字汇总，不向看板暴露缓存中的调用身份或原始事件。
+  const history: CodeChangeHistory = {
+    startDate: cutoff, endDate: today,
+    days: Array.from(byDay, ([day, agents]) => ({ day,
+      codeChanges: Array.from(agents.values()).sort((a, b) => a.agentType.localeCompare(b.agentType)),
+    })).sort((a, b) => a.day.localeCompare(b.day)),
+  };
+  return Object.assign((start: string) => {
     const agents = new Map<string, CodeChangeSummaryEntry>();
-    for (const observation of Object.values(state.observations)) {
-      if (observation.day < start || observation.day > today) continue;
-      const entry = agents.get(observation.agentType) ?? {
-        agentType: observation.agentType, addedLines: 0, deletedLines: 0, filesChanged: 0,
-        measuredOperations: 0, unmeasuredOperations: 0, failedOperations: 0,
-      };
-      entry.addedLines += observation.added;
-      entry.deletedLines += observation.deleted;
-      entry.filesChanged += observation.files;
-      if (observation.status === 'measured') entry.measuredOperations++;
-      if (observation.status === 'unmeasured') entry.unmeasuredOperations++;
-      if (observation.status === 'failed') entry.failedOperations++;
-      agents.set(entry.agentType, entry);
+    for (const day of history.days) {
+      if (day.day < start) continue;
+      for (const entry of day.codeChanges) {
+        const total = agents.get(entry.agentType);
+        if (!total) agents.set(entry.agentType, { ...entry });
+        else {
+          total.addedLines += entry.addedLines;
+          total.deletedLines += entry.deletedLines;
+          total.filesChanged += entry.filesChanged;
+          total.measuredOperations += entry.measuredOperations;
+          total.unmeasuredOperations += entry.unmeasuredOperations;
+          total.failedOperations += entry.failedOperations;
+        }
+      }
     }
     return Array.from(agents.values()).sort((a, b) => a.agentType.localeCompare(b.agentType));
-  };
+  }, { history });
 }
 
 async function readAnchor(file: string, offset: number): Promise<string> {

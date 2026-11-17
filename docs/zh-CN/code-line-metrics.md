@@ -32,7 +32,11 @@ Claude hook 会从原生 transcript 中保留统计必要的编辑结果。使�
 
 每条工具结果增加 `gen_ai.code.change_status`，以及已测量操作的 `gen_ai.code.lines_added`、`gen_ai.code.lines_deleted`、`gen_ai.code.files_changed`。字段定义见[输出事件 Schema](output-event-schema.md)。
 
-Dashboard 新增“AI 文件增删行 · 按 Agent”表，支持今日、最近 7 天、最近 30 天。对应 `metrics-summary.json` 的 `ranges.<range>.codeChanges`：
+Dashboard 的“AI 文件增删行 · 按 Agent”表支持自选开始日期和结束日期（包含首尾两天，日期相同表示查询单日）。默认选择采集器当前日期；刷新和语言切换保留用户选择。选择范围只作用于代码统计，页面上标注“今日”或“最近 30 天”的 Token 等指标保持其标示的口径。
+
+`metrics-summary.json` 新增 `codeChangeHistory`，包含 `startDate`、`endDate` 和 `days: [{ day, codeChanges }]`。仅发布按日、按 Agent 的数值汇总，不暴露事件或调用身份。前端对选定日期区间合计。当前保留窗口为采集器今日及此前 200 天；缺少采集记录的日期无法补齐。超范围、非法日期或开始晚于结束会提示错误；没有对应记录显示无数据。旧采集器不提供历史汇总时会提示升级，不会以今日数据冒充所选日期结果。
+
+原有 `ranges.<range>.codeChanges` 固定范围字段继续保留，兼容已有消费者。单个 Agent 的数据结构为：
 
 ```json
 {

@@ -618,7 +618,7 @@ describe('dashboard static page', () => {
     const ids = [
       'status-dot', 'status-text', 'notice', 'refresh-select', 'language-select',
       'tokens', 'token-detail', 'sessions', 'requests', 'tools', 'agent-grid',
-      'token-trend', 'session-trend', 'models', 'providers', 'repos', 'code-changes', 'code-range',
+      'token-trend', 'session-trend', 'models', 'providers', 'repos', 'code-changes', 'code-start', 'code-end', 'code-date-range',
     ];
     const elements = Object.fromEntries(ids.map(id => [id, new FakeElement()]));
     const heading = new FakeElement({ i18n: 'agentDistribution' });

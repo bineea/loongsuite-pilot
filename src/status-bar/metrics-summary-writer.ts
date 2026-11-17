@@ -6,7 +6,7 @@ import { writeJsonFile, readJsonFile, ensureDir, getTodayDateString } from '../u
 import { createLogger } from '../utils/logger.js';
 import { scanJsonlTail } from './jsonl-tail-reader.js';
 import { LOCAL_LOG_EMERGENCY_FILE_BYTES } from '../utils/segmented-jsonl-writer.js';
-import { refreshCodeChanges, type CodeChangeSummaryEntry } from './code-change-summary.js';
+import { refreshCodeChanges, type CodeChangeSummaryEntry, type CodeChangeHistory } from './code-change-summary.js';
 
 const logger = createLogger('MetricsSummaryWriter');
 
@@ -67,6 +67,7 @@ export interface DailyPoint {
 }
 
 export interface MetricsSummary {
+  codeChangeHistory?: CodeChangeHistory;
   version: number;
   generatedAt: string;
   packageVersion: string;
@@ -312,6 +313,7 @@ export class MetricsSummaryWriter {
       summary.ranges.today.codeChanges = codeChanges(today);
       summary.ranges.sevenDays.codeChanges = codeChanges(dateDaysAgo(6, today));
       summary.ranges.thirtyDays.codeChanges = codeChanges(dateDaysAgo(29, today));
+      summary.codeChangeHistory = codeChanges.history;
     } catch (error) {
       logger.warn('metrics code changes refresh failed', { error: String(error) });
     }

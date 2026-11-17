@@ -21,6 +21,10 @@
     * { box-sizing: border-box; }
     .code-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
     .code-heading h2 { margin-bottom: 0; }
+    .code-heading { flex-wrap: wrap; }
+    .code-dates { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+    .code-dates label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+    .code-dates input { color: var(--text); background: var(--panel-soft); border: 1px solid var(--line); border-radius: 8px; padding: 7px; font: inherit; }
     .code-table-wrap { overflow-x: auto; margin-top: 16px; }
     .code-table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
     .code-table th, .code-table td { padding: 13px 10px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
@@ -141,12 +145,12 @@
     <section class="section panel">
       <div class="code-heading">
         <h2 data-i18n="codeChangesHeading">AI 文件增删行 · 按 Agent</h2>
-        <select id="code-range" data-i18n-aria-label="codeRangeLabel" aria-label="代码统计时间范围">
-          <option value="today" data-i18n="codeRangeToday">今日</option>
-          <option value="sevenDays" data-i18n="codeRangeWeek">最近 7 天</option>
-          <option value="thirtyDays" data-i18n="codeRangeMonth">最近 30 天</option>
-        </select>
+        <div class="code-dates">
+          <label><span data-i18n="codeStartDate">开始日期</span><input id="code-start" type="date" required></label>
+          <label><span data-i18n="codeEndDate">结束日期</span><input id="code-end" type="date" required></label>
+        </div>
       </div>
+      <p id="code-date-range" class="code-note" aria-live="polite"></p>
       <div id="code-changes" class="code-table-wrap" aria-live="polite"></div>
       <p class="code-note" data-i18n="codeChangesNote">统计有成功编辑证据的文本文件物理行，含空行、注释及配置/文档；重复修改累计计数。未测量表示缺少差异证据，不等于没有产出。文件数为修改次数。</p>
     </section>
@@ -194,10 +198,13 @@
         toolCalls: '工具调用数',
         agentDistribution: 'Agent 分布',
         codeChangesHeading: 'AI 文件增删行 · 按 Agent',
-        codeRangeLabel: '代码统计时间范围',
-        codeRangeToday: '今日',
-        codeRangeWeek: '最近 7 天',
-        codeRangeMonth: '最近 30 天',
+        codeStartDate: '开始日期',
+        codeEndDate: '结束日期',
+        codeDateRange: '{start} 至 {end}（包含首尾两天）· 可查询：{min} 至 {max}',
+        codeInvalidDate: '请选择有效的开始日期和结束日期。',
+        codeReversedDates: '开始日期不能晚于结束日期。',
+        codeOutsideHistory: '所选日期超出当前历史保留范围，请重新选择。',
+        codeHistoryUnavailable: '当前摘要不支持自选日期或历史统计暂不可用，请确认采集器已更新并等待下一次统计。',
         codeAdded: '新增行',
         codeDeleted: '删除行',
         codeNet: '净增行',
@@ -255,10 +262,13 @@
         toolCalls: 'Tool calls',
         agentDistribution: 'Agent Distribution',
         codeChangesHeading: 'AI File Line Changes · By Agent',
-        codeRangeLabel: 'Code metrics time range',
-        codeRangeToday: 'Today',
-        codeRangeWeek: 'Last 7 days',
-        codeRangeMonth: 'Last 30 days',
+        codeStartDate: 'Start date',
+        codeEndDate: 'End date',
+        codeDateRange: '{start} to {end} (both dates included) · Available: {min} to {max}',
+        codeInvalidDate: 'Choose valid start and end dates.',
+        codeReversedDates: 'The start date cannot be after the end date.',
+        codeOutsideHistory: 'The selected dates are outside the retained history range.',
+        codeHistoryUnavailable: 'Custom dates are unsupported by this summary or history is temporarily unavailable. Update the collector and wait for its next summary.',
         codeAdded: 'Added lines',
         codeDeleted: 'Deleted lines',
         codeNet: 'Net lines',
@@ -343,7 +353,8 @@
     let refreshMs = DEFAULT_REFRESH_MS;
     let refreshTimer;
     let currentSummary = null;
-    let codeRange = 'today';
+    let codeStartDate = null;
+    let codeEndDate = null;
     let viewState = { kind: 'connecting' };
     const $ = (id) => document.getElementById(id);
 
@@ -535,7 +546,42 @@
     }
 
     function renderCodeChanges(summary) {
-      const changes = summary.ranges?.[codeRange]?.codeChanges;
+      const history = summary.codeChangeHistory;
+      const validDate = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
+        && Number.isFinite(Date.parse(value + 'T00:00:00Z'))
+        && new Date(value + 'T00:00:00Z').toISOString().slice(0, 10) === value;
+      const showError = key => { $('code-changes').innerHTML = `<div class="empty">${escapeHtml(translate(key))}</div>`; };
+      const available = history && validDate(history.startDate) && validDate(history.endDate)
+        && history.startDate <= history.endDate && Array.isArray(history.days);
+      $('code-start').disabled = $('code-end').disabled = !available;
+      $('code-date-range').textContent = '';
+      if (!available) { showError('codeHistoryUnavailable'); return; }
+      // 默认使用采集器日期，避免浏览器时区不同导致跨日；用户选择在刷新时保留。
+      codeStartDate ??= history.endDate;
+      codeEndDate ??= history.endDate;
+      for (const id of ['code-start', 'code-end']) {
+        $(id).min = history.startDate;
+        $(id).max = history.endDate;
+      }
+      $('code-start').value = codeStartDate;
+      $('code-end').value = codeEndDate;
+      if (!validDate(codeStartDate) || !validDate(codeEndDate)) { showError('codeInvalidDate'); return; }
+      if (codeStartDate > codeEndDate) { showError('codeReversedDates'); return; }
+      if (codeStartDate < history.startDate || codeEndDate > history.endDate) { showError('codeOutsideHistory'); return; }
+      $('code-date-range').textContent = translate('codeDateRange', {
+        start: codeStartDate, end: codeEndDate, min: history.startDate, max: history.endDate,
+      });
+      const agents = new Map();
+      const metrics = ['addedLines', 'deletedLines', 'filesChanged', 'measuredOperations', 'unmeasuredOperations', 'failedOperations'];
+      for (const day of history.days) {
+        if (day.day < codeStartDate || day.day > codeEndDate) continue;
+        for (const entry of day.codeChanges) {
+          const total = agents.get(entry.agentType) ?? { agentType: entry.agentType };
+          for (const key of metrics) total[key] = (total[key] ?? 0) + (Number(entry[key]) || 0);
+          agents.set(entry.agentType, total);
+        }
+      }
+      const changes = [...agents.values()].sort((a, b) => a.agentType.localeCompare(b.agentType));
       if (!Array.isArray(changes) || !changes.length) {
         $('code-changes').innerHTML = `<div class="empty">${escapeHtml(translate('noCodeData'))}</div>`;
         return;
@@ -634,9 +680,12 @@
       applyLanguage(event.target.value, true);
     });
 
-    $('code-range').addEventListener('change', event => {
-      if (!['today', 'sevenDays', 'thirtyDays'].includes(event.target.value)) return;
-      codeRange = event.target.value;
+    $('code-start').addEventListener('change', event => {
+      codeStartDate = event.target.value;
+      if (currentSummary) renderCodeChanges(currentSummary);
+    });
+    $('code-end').addEventListener('change', event => {
+      codeEndDate = event.target.value;
       if (currentSummary) renderCodeChanges(currentSummary);
     });
 

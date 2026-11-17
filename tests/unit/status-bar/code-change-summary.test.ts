@@ -128,4 +128,18 @@ describe('代码修改摘要', () => {
     const summary = await refresh();
     expect(summary.ranges.today.codeChanges[0].measuredOperations).toBe(2);
   });
+
+  it('发布完整保留窗口的按日数据，历史区间不混入今日且重启不重复', async () => {
+    await append('2026-09-01', [record('old')]);
+    await append('2026-11-01', [record('start')]);
+    await append('2026-11-03', [record('end'), record('unknown', { 'gen_ai.code.change_status': 'unmeasured' })]);
+    await append(today, [record('today')]);
+    await refresh();
+    const summary = await refresh();
+    expect(summary.codeChangeHistory.startDate).toBe('2026-04-30');
+    expect(summary.codeChangeHistory.endDate).toBe(today);
+    expect(summary.codeChangeHistory.days.map((d: {day: string}) => d.day)).toEqual(['2026-09-01', '2026-11-01', '2026-11-03', today]);
+    expect(summary.codeChangeHistory.days[2].codeChanges[0]).toMatchObject({ addedLines: 8, measuredOperations: 1, unmeasuredOperations: 1 });
+    expect(JSON.stringify(summary.codeChangeHistory)).not.toContain('gen_ai.session.id');
+  });
 });
