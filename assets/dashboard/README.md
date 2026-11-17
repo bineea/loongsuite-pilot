@@ -11,9 +11,21 @@ The HTTP server exposes only:
 - `GET /` - this static page.
 - `GET /metrics-summary.json` - the unmodified `logs/metrics-summary.json` file.
 
-The page does not run another aggregation pipeline. Agent cards are created
+The page reads collector-generated summaries without parsing raw event logs. Agent cards are created
 dynamically from `ranges.today.agentShares`, so newly supported agent types do
 not require a dashboard code change.
+
+The **AI File Line Changes · By Agent** table sums daily entries from
+`codeChangeHistory.days` for the selected inclusive start/end dates. The
+collector supplies the available bounds in `startDate` and `endDate`: its current
+date and the preceding 200 days. This filter does not change the token widgets.
+Refreshes and language changes preserve the selected range. An older collector
+without this history shows an upgrade prompt instead of substituting today's data.
+
+Line counts require successful edit evidence. Unsupported operations and older
+logs without diffs remain unmeasured; a dash does not mean zero output. See the
+[line-change guide (Chinese)](../../docs/zh-CN/code-line-metrics.md) for supported
+tools, counting rules, and deployment requirements.
 
 On the first visit, the page selects Simplified Chinese when the browser's
 preferred language starts with `zh`; otherwise it uses English. The language
