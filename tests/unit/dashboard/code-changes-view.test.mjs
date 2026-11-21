@@ -44,6 +44,25 @@ const summary = {
 };
 
 describe('代码增删行看板', () => {
+  it('默认仅 Agent 总计，展开仓库明细、筛选并在刷新和切换语言后保留', () => {
+    const ui=view();
+    const data={...summary,codeChangeHistory:{...summary.codeChangeHistory,days:[{day:'2026-11-16',codeChanges:[measured],repositoryChanges:[
+      {...measured,repositoryId:'remote:host/a',repositoryName:'host/a',addedLines:7},
+      {...measured,repositoryId:'remote:host/b',repositoryName:'<img src=x>',addedLines:5},
+    ]}]}};
+    ui.render(data);expect(ui.element('code-changes').innerHTML).not.toContain('host/a');
+    ui.element('code-changes').listeners.click({target:{closest:()=>({dataset:{codeAgent:'codex'}})}});
+    expect(ui.element('code-changes').innerHTML).toContain('host/a');
+    expect(ui.element('code-changes').innerHTML).toContain('&lt;img');
+    expect(ui.element('code-changes').innerHTML).not.toContain('<img');
+    expect(ui.element('code-changes').innerHTML).toContain('+7');
+    ui.element('code-changes').listeners.change({target:{dataset:{codeRepositoryAgent:'codex'},value:'remote:host/b'}});
+    expect(ui.element('code-changes').innerHTML).not.toContain('class="code-added">+7<');
+    expect(ui.element('code-changes').innerHTML).toContain('>+5<');
+    ui.render(data);ui.language('en');expect(ui.element('code-changes').innerHTML).toContain('Hide details');
+    ui.element('code-changes').listeners.click({target:{closest:()=>({dataset:{codeAgent:'codex'}})}});
+    expect(ui.element('code-changes').innerHTML).not.toContain('host/a');
+  });
   it('按 Agent 显示实测增删行、净增和覆盖情况，未知不冒充零', () => {
     const ui = view();
     ui.render(summary);

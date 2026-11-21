@@ -1,7 +1,8 @@
 import type { AgentActivityEntry, JsonValue } from '../types/index.js';
+import { absoluteCodePath, groupCodeRepositories, type FileLineCounts } from './code-repositories.js';
 
 type Counts = { added: number; deleted: number; files: number };
-type Evidence = { counts?: Counts; reason?: string };
+type Evidence = { counts?: Counts; reason?: string; fileCounts?: FileLineCounts[] };
 const MAX_PATCH_BYTES = 2 * 1024 * 1024;
 function object(
   value: JsonValue | undefined,
@@ -97,6 +98,7 @@ function patchCounts(text: string): Evidence {
   const counts: Counts = { added: 0, deleted: 0, files: 0 };
   const budget = { remaining: 1_000_000 };
   const paths = new Set<string>();
+  const fileCounts: FileLineCounts[] = [];
   let index = 0;
   while (index < lines.length) {
     const header = lines[index++].match(
@@ -119,6 +121,7 @@ function patchCounts(text: string): Evidence {
     let hunk: string[] = [];
     let hasHunk = false;
     let changed = false;
+    const beforeAdded = counts.added, beforeDeleted = counts.deleted;
     const finishHunk = (): Evidence => {
       const evidence = changedLines(hunk, budget);
       if (!evidence.counts) return evidence;
@@ -142,8 +145,9 @@ function patchCounts(text: string): Evidence {
     const evidence = finishHunk();
     if (!evidence.counts) return evidence;
     if (changed) counts.files++;
+    fileCounts.push({ path: header[2], added: counts.added - beforeAdded, deleted: counts.deleted - beforeDeleted, files: changed ? 1 : 0 });
   }
-  return paths.size ? { counts } : invalid;
+  return paths.size ? { counts, fileCounts } : invalid;
 }
 function callEvidence(args: JsonValue | undefined): Evidence {
   if (typeof args === 'string' && Buffer.byteLength(args) > MAX_PATCH_BYTES)
@@ -193,12 +197,58 @@ function nativeEvidence(
   return { counts };
 }
 
+/** 桌面端实际应用后的 unified diff；校验每个 hunk 的长度，拒绝截断证据。 */
+function desktopEvidence(result: Record<string, JsonValue> | undefined): Evidence {
+  const changes = object(result?.changes);
+  if (!changes || Object.keys(changes).length === 0) return { reason: 'missing_patch' };
+  if (Buffer.byteLength(JSON.stringify(changes)) > MAX_PATCH_BYTES) return { reason: 'evidence_too_large' };
+  const counts: Counts = { added: 0, deleted: 0, files: 0 };
+  const budget = { remaining: 1_000_000 };
+  const fileCounts: FileLineCounts[] = [];
+  for (const [file, value] of Object.entries(changes)) {
+    const change = object(value);
+    if (change?.type !== 'update' || change.move_path) return { reason: 'missing_original_content' };
+    if (typeof change.unified_diff !== 'string') return { reason: 'missing_patch' };
+    if (change.unified_diff === '') { fileCounts.push({path:file,added:0,deleted:0,files:0}); continue; }
+    const lines = change.unified_diff.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n');
+    let index = 0;
+    let changed = false;
+    const beforeAdded = counts.added, beforeDeleted = counts.deleted;
+    while (index < lines.length) {
+      const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$/.exec(lines[index++]);
+      if (!header) return { reason: 'invalid_patch' };
+      const oldCount = Number(header[2] ?? 1), newCount = Number(header[4] ?? 1);
+      if (!Number.isSafeInteger(oldCount) || !Number.isSafeInteger(newCount)) return { reason: 'invalid_patch' };
+      const hunk: string[] = [];
+      let oldSeen = 0, newSeen = 0;
+      while (index < lines.length && !lines[index].startsWith('@@ ')) {
+        const line = lines[index++];
+        if (line === '\\ No newline at end of file') continue;
+        if (!/^[ +\-]/.test(line)) return { reason: 'invalid_patch' };
+        if (line[0] !== '+') oldSeen++;
+        if (line[0] !== '-') newSeen++;
+        hunk.push(line);
+      }
+      if (oldSeen !== oldCount || newSeen !== newCount) return { reason: 'invalid_patch' };
+      const evidence = changedLines(hunk, budget);
+      if (!evidence.counts) return evidence;
+      counts.added += evidence.counts.added;
+      counts.deleted += evidence.counts.deleted;
+      changed ||= evidence.counts.files > 0;
+    }
+    if (changed) counts.files++;
+    fileCounts.push({ path: file, added: counts.added - beforeAdded, deleted: counts.deleted - beforeDeleted, files: changed ? 1 : 0 });
+  }
+  return { counts, fileCounts };
+}
+
 /** 只缓存有界数字证据，结果重放可复用调用；不保留源码或读取工作区文件。 */
 export class CodeChangeProcessor {
   private readonly calls = new Map<
     string,
-    { name: string; evidence: Evidence }
+    { name: string; evidence: Evidence; filePath?: string }
   >();
+  private readonly fileEvidence = new WeakMap<AgentActivityEntry, FileLineCounts[]>();
   constructor(private readonly maxPendingCalls = 4096) {}
 
   enrich(entries: AgentActivityEntry[]): void {
@@ -223,13 +273,16 @@ export class CodeChangeProcessor {
       if (event === 'tool.call') {
         const name = this.toolName(entry['gen_ai.tool.name']);
         if (key && name.length <= 256) {
+          const argumentsValue = object(entry['gen_ai.tool.call.arguments']);
+          const filePath = argumentsValue?.file_path ?? argumentsValue?.filePath ?? argumentsValue?.path;
+          const workspace = typeof entry['workspace.path'] === 'string' ? entry['workspace.path'] : undefined;
+          const evidence = name === 'apply_patch' ? callEvidence(entry['gen_ai.tool.call.arguments']) : { reason: 'unsupported_tool' };
+          if (evidence.fileCounts) evidence.fileCounts = evidence.fileCounts.map(file => ({...file, path:absoluteCodePath(file.path,workspace) ?? ''}));
           this.calls.delete(key);
           this.calls.set(key, {
             name,
-            evidence:
-              name === 'apply_patch'
-                ? callEvidence(entry['gen_ai.tool.call.arguments'])
-                : { reason: 'unsupported_tool' },
+            evidence,
+            filePath: typeof filePath === 'string' ? absoluteCodePath(filePath,workspace) : undefined,
           });
           while (this.calls.size > Math.max(0, this.maxPendingCalls))
             this.calls.delete(this.calls.keys().next().value!);
@@ -241,6 +294,10 @@ export class CodeChangeProcessor {
       const name = this.toolName(entry['gen_ai.tool.name'] ?? call?.name);
       const payload = entry['gen_ai.tool.call.result'];
       const result = object(payload);
+      if (name === 'codex_file_change') {
+        // 原始 diff 只用于内存计量，持久化输出保留来源和数字，不复制用户源码。
+        entry['gen_ai.tool.call.result'] = { source: 'codex.item_completed.FileChange' };
+      }
       const text =
         typeof result?.output === 'string'
           ? result.output
@@ -251,6 +308,8 @@ export class CodeChangeProcessor {
       delete entry['gen_ai.code.lines_deleted'];
       delete entry['gen_ai.code.files_changed'];
       delete entry['gen_ai.code.change_reason'];
+      delete entry['gen_ai.code.repositories'];
+      this.fileEvidence.delete(entry);
       if (
         /^(read|read_file|readfile|glob|grep|search|list_directory|ls|web_search|tool_search)$/.test(
           name,
@@ -279,7 +338,10 @@ export class CodeChangeProcessor {
       let evidence: Evidence = {
         reason: call ? 'unsupported_tool' : 'missing_call',
       };
-      if (name === 'apply_patch') {
+      if (name === 'codex_file_change') {
+        evidence = entry['tool.result.status'] === 'success'
+          ? desktopEvidence(result) : { reason: 'missing_success_evidence' };
+      } else if (name === 'apply_patch') {
         evidence = /^Success\. Updated the following files:\r?\n/m.test(text)
           ? (call?.evidence ?? { reason: 'missing_call' })
           : { reason: 'missing_success_evidence' };
@@ -300,7 +362,21 @@ export class CodeChangeProcessor {
         entry['gen_ai.code.lines_added'] = evidence.counts.added;
         entry['gen_ai.code.lines_deleted'] = evidence.counts.deleted;
         entry['gen_ai.code.files_changed'] = evidence.counts.files;
+        const nativePath = result?.filePath ?? result?.file_path ?? call?.filePath;
+        const files = evidence.fileCounts ?? (typeof nativePath === 'string' ? [{ path: nativePath, ...evidence.counts }] : []);
+        this.fileEvidence.set(entry, files);
       } else this.status(entry, 'unmeasured', evidence.reason);
+    }
+  }
+  /** 路径仅在计量与 Git 归属阶段存活；持久化事件只增加仓库身份和数字分项。 */
+  async enrichRepositories(entries: AgentActivityEntry[]): Promise<void> {
+    for (const entry of entries) {
+      const files = this.fileEvidence.get(entry);
+      if (!files?.length || files.length > 512) continue;
+      try {
+        entry['gen_ai.code.repositories'] = await groupCodeRepositories(files, typeof entry['workspace.path'] === 'string' ? entry['workspace.path'] : undefined);
+      } catch { /* 解析失败不影响总计，汇总层将其归入未知仓库。 */ }
+      finally { this.fileEvidence.delete(entry); }
     }
   }
   private toolName(name: string | undefined): string {

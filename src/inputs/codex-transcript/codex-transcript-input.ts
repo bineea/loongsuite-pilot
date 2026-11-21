@@ -53,6 +53,7 @@ import {
   type CodexTranscriptSourceRecord,
 } from './codex-transcript-types.js';
 import { stringValue, timestampMs } from './codex-transcript-utils.js';
+import { nativeFileChangeEntry, type NativeFileChangeCursor } from './codex-native-file-change.js';
 import { DEFAULT_POLL_INTERVAL_MS } from '../../utils/poll-interval.js';
 
 const DEFAULT_SESSION_DIR = '~/.codex/sessions';
@@ -495,7 +496,8 @@ export class CodexTranscriptInput extends BaseInput {
   private async processFile(filePath: string): Promise<number> {
     const observed: { stat?: RolloutStatSnapshot } = {};
     try {
-      return await this.scanRolloutFile(filePath, observed);
+      const count = await this.scanRolloutFile(filePath, observed);
+      return count + await this.scanNativeFileChanges(filePath);
     } finally {
       this.noteRolloutIdle(filePath, observed.stat);
     }
@@ -526,7 +528,10 @@ export class CodexTranscriptInput extends BaseInput {
       return;
     }
     const checkpoint = this.readCheckpoint(this.stateKey(filePath));
-    if (!checkpoint || !rolloutCaughtUp(checkpoint, stat)) {
+    const native = this.stateStore.get(this.stateKey(filePath)).extra?.codexFileChanges as NativeFileChangeCursor | undefined;
+    const needsNativeScan = this.transcriptMetaByPath.get(filePath)?.originator === 'Codex Desktop'
+      && (!native || (native.offset < stat.size && native.tailEnd !== stat.size));
+    if (!checkpoint || !rolloutCaughtUp(checkpoint, stat) || needsNativeScan) {
       this.rolloutIdleSnapshot.delete(filePath);
       return;
     }
@@ -543,6 +548,106 @@ export class CodexTranscriptInput extends BaseInput {
     });
     this.cachedDefaultRollout = complete && dirMtimes.size > 0 ? { dirMtimes, files } : null;
     return files;
+  }
+
+  /** 独立游标允许升级后补采已越过普通会话基线的原生差异；不重放 LLM/Token 事件。 */
+  private async scanNativeFileChanges(filePath: string): Promise<number> {
+    let stat;
+    try { stat = await fs.stat(filePath); } catch { return 0; }
+    const key = this.stateKey(filePath);
+    const version = sourceVersion(stat);
+    if (this.stateStore.get(key).extra?.codexNativeUnsupportedVersion === version) return 0;
+    if (!this.transcriptMetaByPath.has(filePath)) {
+      const offset = await this.findOwnerOffset(filePath, stat);
+      await this.registerSubagentOwnerMeta(filePath, stat.ino, stat.size, offset, 'discovery');
+    }
+    const owner = this.transcriptMetaByPath.get(filePath);
+    if (owner?.originator !== 'Codex Desktop') {
+      if (owner) {
+        const current = this.stateStore.get(key);
+        this.stateStore.update(key, { extra: { ...current.extra, codexNativeUnsupportedVersion: version } });
+      }
+      return 0;
+    }
+    const previous = this.stateStore.get(key).extra?.codexFileChanges as NativeFileChangeCursor | undefined;
+    let cursor: NativeFileChangeCursor = previous?.version === 2 && previous.inode === stat.ino
+      && Number.isSafeInteger(previous.offset) && previous.offset >= 0 && previous.offset <= stat.size
+      && !(previous.size === stat.size && previous.mtimeMs !== stat.mtimeMs)
+      ? { ...previous } : { version: 2, inode: stat.ino, offset: 0 };
+    const readAnchor = async (offset: number): Promise<string> => {
+      if (!offset) return '';
+      const handle = await fs.open(filePath, 'r');
+      try {
+        // 校验完整已消费前缀，避免同 inode、等长回执替换被误当成追加。
+        // 持久化摘要而非原始字节；静态文件不重复读取。
+        const hash = crypto.createHash('sha256');
+        const buffer = Buffer.alloc(Math.min(1024 * 1024, offset));
+        let position = 0;
+        while (position < offset) {
+          const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, offset - position), position);
+          if (!bytesRead) break;
+          hash.update(buffer.subarray(0, bytesRead));
+          position += bytesRead;
+        }
+        return hash.digest('hex');
+      } finally { await handle.close(); }
+    };
+    if (cursor.offset > 0 && cursor.mtimeMs !== stat.mtimeMs && cursor.anchor !== await readAnchor(cursor.offset)) {
+      cursor = { version: 2, inode: stat.ino, offset: 0 };
+    }
+    if (cursor.offset === stat.size || cursor.tailEnd === stat.size) return 0;
+    const expectedOwner = owner.threadId;
+    // 未完成尾行只探测新追加字节是否出现换行，避免每轮重读长工具输出。
+    if (cursor.tailEnd !== undefined && cursor.tailEnd < stat.size) {
+      const handle = await fs.open(filePath, 'r');
+      let newline = false;
+      try {
+        const end = Math.min(stat.size, cursor.tailEnd + MAX_SCAN_BYTES_PER_FILE_CYCLE);
+        while (cursor.tailEnd < end) {
+          const buffer = Buffer.alloc(Math.min(READ_CHUNK_SIZE, end - cursor.tailEnd));
+          const { bytesRead } = await handle.read(buffer, 0, buffer.length, cursor.tailEnd);
+          if (!bytesRead) break;
+          cursor.tailEnd += bytesRead;
+          if (buffer.subarray(0, bytesRead).includes(0x0a)) { newline = true; break; }
+        }
+      } finally { await handle.close(); }
+      if (!newline) {
+        cursor.size = stat.size; cursor.mtimeMs = stat.mtimeMs;
+        const current = this.stateStore.get(key);
+        this.stateStore.update(key, { extra: { ...current.extra, codexFileChanges: cursor } });
+        return 0;
+      }
+    }
+    const entries: AgentActivityEntry[] = [];
+    const consume = (line: JsonLine): void => {
+      const payload = asRecord(line.record.payload);
+      if (line.record.type === 'session_meta') {
+        const meta = extractCodexTranscriptMeta(line.record);
+        if (meta?.threadId === expectedOwner) {
+          cursor.owner = meta.threadId;
+          cursor.parent = meta.parentThreadId;
+          cursor.cwd = stringValue(payload?.cwd);
+        }
+      } else if (cursor.owner && line.record.type === 'turn_context') {
+        cursor.cwd = stringValue(payload?.cwd) ?? cursor.cwd;
+      }
+      const entry = nativeFileChangeEntry(line.record, cursor);
+      if (entry && this.workspacePolicy.allows(entry, this.agentType)
+        && (!cursor.parent || this.workspacePolicy.allows({ 'gen_ai.session.id': cursor.parent }, this.agentType))) entries.push(entry);
+    };
+    const limit = Math.min(stat.size, cursor.offset + MAX_SCAN_BYTES_PER_FILE_CYCLE);
+    let scan = await scanJsonLines(filePath, cursor.offset, limit, consume, this.getInputRuntimeAccumulator());
+    if (scan.nextOffset === cursor.offset && limit < stat.size) {
+      scan = await scanJsonLines(filePath, cursor.offset, stat.size, line => { consume(line); return false; }, this.getInputRuntimeAccumulator());
+    }
+    const count = this.emitEntryBatches(entries);
+    cursor.offset = scan.nextOffset;
+    cursor.anchor = await readAnchor(cursor.offset);
+    cursor.tailEnd = scan.incompleteTail?.endOffset;
+    cursor.size = stat.size; cursor.mtimeMs = stat.mtimeMs;
+    const current = this.stateStore.get(key);
+    this.stateStore.update(key, { extra: { ...current.extra, codexFileChanges: cursor } });
+    return count;
   }
 
   private async rolloutDirsUnchanged(dirMtimes: Map<string, number>): Promise<boolean> {

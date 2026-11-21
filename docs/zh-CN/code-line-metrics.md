@@ -1,4 +1,4 @@
-# 按 Agent 统计实际文件增删行
+# 按 Agent 与仓库统计实际文件增删行
 
 本 fork 在采集端、摘要和本地 Dashboard 增加文件增删行统计。指标按 `gen_ai.agent.type` 分组，因此汇总与展示不需要为新 Agent 单独写分支。**接入 Agent 不等于其全部编辑方式已具备可测量证据。**
 
@@ -8,7 +8,7 @@
 - 统计文本文件物理行，包含空行、注释、配置文件及文档；不是语义代码行或最终 Git 留存行数。
 - 新增与删除分别累计，净增为新增减删除。同一文件反复修改会重复计入；回滚也是一次新的修改。
 - 文件数显示为“文件修改次数”，不能解释为独立文件总数。
-- 使用采集日志的日期分桶，与现有 Token 摘要的日期一致。
+- 一般事件使用采集日志日期分桶；Codex Desktop 原生回执补采按原编辑日期归档。
 - “—”表示没有已测量的操作；“0”只有在有已测量操作且该项确实为零时出现。
 - “未测量操作”表示工具记录不足以确定文件差异，不表示这些操作一定写过文件，也不能当作漏采的代码行数。
 
@@ -17,12 +17,15 @@
 | 来源 | 可测量证据 | 无法确认时 |
 |---|---|---|
 | Codex `apply_patch` | 调用中的完整 `Update File` 补丁 + 对应结果明确成功；统计更新补丁中的新增、删除行 | `Add File` 与 `Move to` 均可能覆盖已有目标文件，缺少目标原文时与整文件删除一样标为未测量；失败不计 |
+| Codex Desktop 内层文件编辑 | 原生 `item_completed / FileChange`、`exec-` 操作 ID、成功状态与完整 `update.unified_diff`；支持外层 `exec` 包裹的编辑和子 Agent | 没有原生回执、差异截断、创建/删除缺少原文或涉及移动时仍不猜测 |
 | Claude Code `Edit` | 成功结果中的原生 `structuredPatch` | 只有替换参数而没有实际应用结果，不猜测替换次数 |
 | Claude Code `Write` | 明确的原生创建结果及内容，或覆盖结果中的差异 | 旧文件覆盖缺少原文/差异，标为未测量 |
 | 其他 Agent | 相同的成功编辑证据格式由统一处理器识别 | 不支持的工具格式标为未测量，可继续扩展解析器 |
-| Shell / Bash / PowerShell / code-mode `exec` | 当前不执行脚本，也不推断脚本是否写入 | 标为未测量；嵌套在 `exec` 中的编辑不能等同于独立 `apply_patch` |
+| Shell / Bash / PowerShell / code-mode `exec` | 不执行或解析脚本推断写入；桌面端有独立原生 `FileChange` 回执时按上一行计量 | 外层调用仍可显示未测量；没有原生文件差异的脚本写入无法计量 |
 
 处理器不读取工作区当前文件来猜测历史修改前内容，也不把整个 Git 工作区的人工修改归给 AI。终端脚本和未支持 Agent 的完整覆盖，需要后续增加可靠的操作前后快照或原生编辑事件。
+
+桌面端原生文件事件使用独立增量游标，可补采普通会话游标已越过的历史回执，无需删除旧日志或重置 Token 采集。仅扫描已发现且标记为 `Codex Desktop` 的本地 JSONL，按事件所属线程及操作 ID 去重，忽略子 Agent 中的祖先事件副本；直接工具调用的镜像沿用原采集路径，避免双计。补采归属原编辑发生日，最多覆盖当前日及此前 200 天；已压缩或已清理的源记录不在此补采范围。原生 diff 只在内存中计量，输出保留数字和来源标识。没有差异证据的旧输出不能恢复，但仍保留原生回执的历史记录可以补采。
 
 更新补丁使用行级差异消除替换块中的共同内容，包括重复行和空行。每次操作最多计算 100 万个差异单元，单份证据上限 2 MiB；超出预算标为未测量，不退回不准确的估算。一份混合补丁中若有无法测量的文件，整个操作标为未测量，避免把局部计数伪装成完整结果。
 
@@ -34,7 +37,18 @@ Claude hook 会从原生 transcript 中保留统计必要的编辑结果。使�
 
 Dashboard 的“AI 文件增删行 · 按 Agent”表支持自选开始日期和结束日期（包含首尾两天，日期相同表示查询单日）。默认选择采集器当前日期；刷新和语言切换保留用户选择。选择范围只作用于代码统计，页面上标注“今日”或“最近 30 天”的 Token 等指标保持其标示的口径。
 
-`metrics-summary.json` 新增 `codeChangeHistory`，包含 `startDate`、`endDate` 和 `days: [{ day, codeChanges }]`。仅发布按日、按 Agent 的数值汇总，不暴露事件或调用身份。前端对选定日期区间合计。当前保留窗口为采集器今日及此前 200 天；缺少采集记录的日期无法补齐。超范围、非法日期或开始晚于结束会提示错误；没有对应记录显示无数据。旧采集器不提供历史汇总时会提示升级，不会以今日数据冒充所选日期结果。
+默认仅显示 Agent 汇总行，点击“查看明细”展开该 Agent 的仓库明细，并支持仓库筛选。日期、语言切换和自动刷新保留展开状态；仓库筛选只影响明细，不改变 Agent 总计。
+
+`metrics-summary.json` 新增 `codeChangeHistory`，包含 `startDate`、`endDate` 和 `days: [{ day, codeChanges, repositoryChanges }]`。仓库分项增加 `repositoryId`、`repositoryName`，其余数字字段与 Agent 总计一致。仅发布按日、按 Agent/仓库的数值汇总，不暴露事件或调用身份。前端对选定日期区间合计。当前保留窗口为采集器今日及此前 200 天；缺少采集记录的日期无法补齐。超范围、非法日期或开始晚于结束会提示错误；没有对应记录显示无数据。旧采集器不提供历史汇总时会提示升级，不会以今日数据冒充所选日期结果。
+
+### 仓库归属
+
+- 使用差异证据中的实际文件路径，读取所在目录的 Git 元数据；不把会话所在仓库当作所有文件的归属。相对路径基于工具调用/回执的工作目录解析。
+- 有远端时以无凭据的主机、非默认端口和仓库路径作为身份，统一 SSH/HTTPS 的常见表示，去除 `.git`；同一远端的多个 worktree/本地副本合并。远端路径大小写保留。
+- 无远端时使用 Git common directory 的摘要身份，关联本地 worktree；不发布完整本地路径。无法定位的文件、未测量及失败操作归入“仓库未确定”，不推测归属。
+- 跨仓库操作按逐文件差异分摊新增、删除和文件修改次数，总和与 Agent 总计一致；每个涉及仓库分别计一次操作，因此仓库操作次数不能直接相加作为 Agent 操作总数。
+- 仓库识别基于采集时仍存在的 Git 元数据；删除工作区或修改远端后无法保证还原历史身份。旧缓存保留总计，Codex Desktop 版本化独立游标自动补采保留的原生回执并补充归属；重复回执不重复增加总计。缺少路径/源回执时保留未知。
+- 事件分项 `gen_ai.code.repositories` 仅包含 `{id,name,added,deleted,files}`，原始文件路径只在计量阶段使用，不新增源码快照。分项缺失或与总计不一致时整笔归为未知，避免展示虚假的仓库贡献。
 
 原有 `ranges.<range>.codeChanges` 固定范围字段继续保留，兼容已有消费者。单个 Agent 的数据结构为：
 
@@ -57,7 +71,7 @@ Dashboard 的“AI 文件增删行 · 按 Agent”表支持自选开始日期和
 ```powershell
 npm.cmd ci
 npm.cmd run typecheck
-npm.cmd test -- tests/unit/normalization/code-change-processor.test.ts tests/unit/status-bar/code-change-summary.test.ts tests/unit/status-bar/metrics-summary-writer.test.ts tests/unit/dashboard
+npm.cmd test -- tests/unit/inputs/codex-transcript tests/unit/normalization/code-change-processor.test.ts tests/unit/status-bar/code-change-summary.test.ts tests/unit/status-bar/metrics-summary-writer.test.ts tests/unit/dashboard tests/integration/code-line-metrics.test.ts
 npm.cmd run build
 ```
 

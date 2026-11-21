@@ -54,6 +54,7 @@ export function extractCodexTranscriptMeta(record: Record<string, unknown>): Cod
     : undefined;
   return {
     threadId,
+    ...(stringValue(payload.originator) ? { originator: stringValue(payload.originator) } : {}),
     rootSessionId: stringValue(payload.session_id) ?? threadId,
     threadSource,
     ...(parentThreadId ? { parentThreadId } : {}),
