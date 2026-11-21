@@ -570,10 +570,10 @@ export class CodexTranscriptInput extends BaseInput {
       return 0;
     }
     const previous = this.stateStore.get(key).extra?.codexFileChanges as NativeFileChangeCursor | undefined;
-    let cursor: NativeFileChangeCursor = previous && previous.inode === stat.ino
+    let cursor: NativeFileChangeCursor = previous?.version === 2 && previous.inode === stat.ino
       && Number.isSafeInteger(previous.offset) && previous.offset >= 0 && previous.offset <= stat.size
       && !(previous.size === stat.size && previous.mtimeMs !== stat.mtimeMs)
-      ? { ...previous } : { inode: stat.ino, offset: 0 };
+      ? { ...previous } : { version: 2, inode: stat.ino, offset: 0 };
     const readAnchor = async (offset: number): Promise<string> => {
       if (!offset) return '';
       const handle = await fs.open(filePath, 'r');
@@ -593,7 +593,7 @@ export class CodexTranscriptInput extends BaseInput {
       } finally { await handle.close(); }
     };
     if (cursor.offset > 0 && cursor.mtimeMs !== stat.mtimeMs && cursor.anchor !== await readAnchor(cursor.offset)) {
-      cursor = { inode: stat.ino, offset: 0 };
+      cursor = { version: 2, inode: stat.ino, offset: 0 };
     }
     if (cursor.offset === stat.size || cursor.tailEnd === stat.size) return 0;
     const expectedOwner = owner.threadId;

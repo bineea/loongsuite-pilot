@@ -121,6 +121,33 @@ describe('代码修改摘要', () => {
     expect(summary.ranges.today.codeChanges[0]).toMatchObject({ measuredOperations: 1, unmeasuredOperations: 0, failedOperations: 2, addedLines: 8 });
   });
 
+  it('仓库分项补采保持总计不变，错误分项回落未知而非会话仓库', async () => {
+    await append(today,[record('backfill',{'git.repo':'wrong/session'})]);await refresh();
+    const split=[{id:'remote:host/a',name:'host/a',added:5,deleted:1,files:1},{id:'remote:host/b',name:'host/b',added:3,deleted:2,files:0}];
+    await append(today,[record('backfill',{'gen_ai.code.repositories':split}),record('backfill',{'gen_ai.code.repositories':split})]);
+    let summary=await refresh();
+    expect(summary.ranges.today.codeChanges[0].addedLines).toBe(8);
+    expect(summary.codeChangeHistory.days[0].repositoryChanges).toEqual([
+      expect.objectContaining({repositoryId:'remote:host/a',addedLines:5,deletedLines:1,measuredOperations:1}),
+      expect.objectContaining({repositoryId:'remote:host/b',addedLines:3,deletedLines:2,measuredOperations:1}),
+    ]);
+    await append(today,[record('invalid-split',{'gen_ai.code.repositories':[{...split[0],added:999}]})]);summary=await refresh();
+    expect(summary.codeChangeHistory.days[0].repositoryChanges.find((r:any)=>r.repositoryId==='unknown')).toMatchObject({addedLines:8,deletedLines:3});
+  });
+  it('旧版缓存升级且原日志已清理时保留历史总计，未知归属可后补', async () => {
+    await append(today,[record('old-cache')]);await refresh();
+    const cachePath=path.join(dir,'cache/metrics-code-changes.json');
+    const cache=JSON.parse(await fs.readFile(cachePath,'utf8'));cache.version=1;
+    for(const value of Object.values(cache.observations) as any[])delete value.repositories;
+    await fs.writeFile(cachePath,JSON.stringify(cache));
+    await fs.unlink(path.join(dir,'logs/output',`agent-${today}.jsonl`));
+    let summary=await refresh();expect(summary.ranges.today.codeChanges[0].addedLines).toBe(8);
+    expect(summary.codeChangeHistory.days[0].repositoryChanges[0]).toMatchObject({repositoryId:'unknown',addedLines:8});
+    await append(today,[record('old-cache',{'gen_ai.code.repositories':[{id:'remote:host/a',name:'host/a',added:8,deleted:3,files:1}]})]);
+    summary=await refresh();expect(summary.ranges.today.codeChanges[0].measuredOperations).toBe(1);
+    expect(summary.codeChangeHistory.days[0].repositoryChanges[0]).toMatchObject({repositoryId:'remote:host/a',addedLines:8});
+  });
+
   it('缺少会话时使用 event id，缺少所有身份时跳过', async () => {
     await append(today, [record('one', { 'gen_ai.session.id': '', 'gen_ai.tool.call.id': 'reused' }),
       record('two', { 'gen_ai.session.id': '', 'gen_ai.tool.call.id': 'reused' }),

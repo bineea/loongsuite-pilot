@@ -426,6 +426,7 @@ export class InputManager extends EventEmitter {
     }
 
     this.codeChangeProcessor.enrich(entries);
+    await this.codeChangeProcessor.enrichRepositories(entries);
     this.applyIdentity(entries);
 
     // Fill-only lifecycle enrichment. It never changes record order/count or
@@ -469,6 +470,7 @@ export class InputManager extends EventEmitter {
     }
 
     this.codeChangeProcessor.enrich(entries);
+    await this.codeChangeProcessor.enrichRepositories(entries);
     this.applyIdentity(entries);
     const prepared = this.applyMask(entries);
     let outputBatchBytes = 0;

@@ -18,8 +18,14 @@ export interface CodeChangeSummaryEntry {
 export interface CodeChangeHistory {
   startDate: string;
   endDate: string;
-  days: Array<{ day: string; codeChanges: CodeChangeSummaryEntry[] }>;
+  days: Array<{ day: string; codeChanges: CodeChangeSummaryEntry[]; repositoryChanges: CodeRepositorySummaryEntry[] }>;
 }
+
+export interface CodeRepositorySummaryEntry extends CodeChangeSummaryEntry {
+  repositoryId: string;
+  repositoryName: string;
+}
+type RepositoryCounts = { id: string; name: string; added: number; deleted: number; files: number };
 
 type CodeChangeQuery = ((start: string) => CodeChangeSummaryEntry[]) & { history: CodeChangeHistory };
 
@@ -30,11 +36,12 @@ interface Observation {
   added: number;
   deleted: number;
   files: number;
+  repositories?: RepositoryCounts[];
 }
 
 interface FileCursor { day: string; offset: number; size: number; anchor: string }
 interface CodeState {
-  version: 1;
+  version: 1 | 2;
   files: Record<string, FileCursor>;
   observations: Record<string, Observation>;
 }
@@ -44,8 +51,10 @@ export async function refreshCodeChanges(
   cachePath: string, files: string[], today: string,
 ): Promise<CodeChangeQuery> {
   const loaded = await readJsonFile<CodeState>(cachePath);
-  const state: CodeState = loaded?.version === 1 && loaded.files && loaded.observations
-    ? loaded : { version: 1, files: {}, observations: {} };
+  const state: CodeState = (loaded?.version === 1 || loaded?.version === 2) && loaded.files && loaded.observations
+    ? loaded : { version: 2, files: {}, observations: {} };
+  // 保留旧观察值与去重身份，避免日志轮转删除后升级丢失历史总计。
+  state.version = 2;
   const cutoffDate = new Date(today + 'T00:00:00');
   cutoffDate.setDate(cutoffDate.getDate() - 200);
   const cutoff = [cutoffDate.getFullYear(), String(cutoffDate.getMonth() + 1).padStart(2, '0'), String(cutoffDate.getDate()).padStart(2, '0')].join('-');
@@ -75,7 +84,10 @@ export async function refreshCodeChanges(
         ])).digest('hex');
         const previous = state.observations[key];
         if (!previous || (previous.status === 'unmeasured' && observation.status === 'measured')
-          || (previous.status !== 'failed' && observation.status === 'failed')) {
+          || (previous.status !== 'failed' && observation.status === 'failed')
+          || (previous.status === observation.status && previous.added === observation.added
+            && previous.deleted === observation.deleted && previous.files === observation.files
+            && knownRepositoryWeight(observation) > knownRepositoryWeight(previous))) {
           state.observations[key] = { ...observation, day: previous?.day ?? observation.day };
         }
       },
@@ -91,6 +103,7 @@ export async function refreshCodeChanges(
   await ensureDir(path.dirname(cachePath));
   await writeJsonFile(cachePath, state);
   const byDay = new Map<string, Map<string, CodeChangeSummaryEntry>>();
+  const repositoriesByDay = new Map<string, Map<string, CodeRepositorySummaryEntry>>();
   for (const observation of Object.values(state.observations)) {
     if (observation.day < cutoff || observation.day > today) continue;
     const agents = byDay.get(observation.day) ?? new Map<string, CodeChangeSummaryEntry>();
@@ -106,12 +119,25 @@ export async function refreshCodeChanges(
     if (observation.status === 'unmeasured') entry.unmeasuredOperations++;
     if (observation.status === 'failed') entry.failedOperations++;
     agents.set(entry.agentType, entry);
+    const repositories = repositoriesByDay.get(observation.day) ?? new Map<string, CodeRepositorySummaryEntry>();
+    repositoriesByDay.set(observation.day, repositories);
+    for (const part of observation.repositories ?? [unknownRepository(observation)]) {
+      const key = JSON.stringify([observation.agentType, part.id]);
+      const total = repositories.get(key) ?? { agentType: observation.agentType, repositoryId: part.id, repositoryName: part.name,
+        addedLines: 0, deletedLines: 0, filesChanged: 0, measuredOperations: 0, unmeasuredOperations: 0, failedOperations: 0 };
+      total.addedLines += part.added; total.deletedLines += part.deleted; total.filesChanged += part.files;
+      if (observation.status === 'measured') total.measuredOperations++;
+      if (observation.status === 'unmeasured') total.unmeasuredOperations++;
+      if (observation.status === 'failed') total.failedOperations++;
+      repositories.set(key,total);
+    }
   }
   // 只发布按日数字汇总，不向看板暴露缓存中的调用身份或原始事件。
   const history: CodeChangeHistory = {
     startDate: cutoff, endDate: today,
     days: Array.from(byDay, ([day, agents]) => ({ day,
       codeChanges: Array.from(agents.values()).sort((a, b) => a.agentType.localeCompare(b.agentType)),
+      repositoryChanges: [...(repositoriesByDay.get(day)?.values() ?? [])].sort((a,b)=>a.agentType.localeCompare(b.agentType)||a.repositoryId.localeCompare(b.repositoryId)),
     })).sort((a, b) => a.day.localeCompare(b.day)),
   };
   return Object.assign((start: string) => {
@@ -170,10 +196,40 @@ function parseObservation(record: Record<string, unknown>, day: string): Observa
   const files = nonnegativeInteger(record['gen_ai.code.files_changed']);
   const validStatus = status === 'measured' && (added === null || deleted === null || files === null)
     ? 'unmeasured' : status;
-  return { day, agentType: String(record['gen_ai.agent.type'] ?? 'unknown'), status: validStatus,
+  const observation: Observation = { day, agentType: String(record['gen_ai.agent.type'] ?? 'unknown'), status: validStatus,
     added: validStatus === 'measured' ? added! : 0,
     deleted: validStatus === 'measured' ? deleted! : 0,
     files: validStatus === 'measured' ? files! : 0 };
+  observation.repositories = parseRepositoryCounts(record['gen_ai.code.repositories'], observation);
+  return observation;
+}
+
+function unknownRepository(observation: Observation): RepositoryCounts {
+  return { id: 'unknown', name: '', added: observation.added, deleted: observation.deleted, files: observation.files };
+}
+
+function knownRepositoryWeight(observation: Observation): number {
+  return (observation.repositories ?? []).reduce((weight, part) => weight + (part.id === 'unknown' ? 0 : 1 + part.added + part.deleted + part.files), 0);
+}
+
+/** 分项必须完整、非负且和总计一致；异常数据不制造额外贡献。 */
+function parseRepositoryCounts(value: unknown, observation: Observation): RepositoryCounts[] {
+  const fallback = [unknownRepository(observation)];
+  if (observation.status !== 'measured' || !Array.isArray(value) || !value.length || value.length > 512) return fallback;
+  const groups = new Map<string, RepositoryCounts>();
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || typeof item.id !== 'string' || !item.id || item.id.length > 4096
+      || typeof item.name !== 'string' || item.name.length > 4096) return fallback;
+    const added = nonnegativeInteger(item.added), deleted = nonnegativeInteger(item.deleted), files = nonnegativeInteger(item.files);
+    if (added === null || deleted === null || files === null) return fallback;
+    const part = groups.get(item.id) ?? { id:item.id, name:item.name, added:0, deleted:0, files:0 };
+    part.added += added; part.deleted += deleted; part.files += files; groups.set(part.id, part);
+  }
+  const result = [...groups.values()];
+  for (const key of ['added','deleted','files'] as const) {
+    if (result.reduce((sum, part)=>sum+part[key],0) !== observation[key]) return fallback;
+  }
+  return result;
 }
 
 function nonnegativeInteger(value: unknown): number | null {

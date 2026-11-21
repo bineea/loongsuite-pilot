@@ -161,6 +161,7 @@ Codex 子线程始终保留自身 session/turn/step；同 Trace 可以包含多�
 | `gen_ai.code.lines_added` | int | 仅 `measured` 时 | 成功编辑证据中的新增物理行数，非负整数，含空行、注释和文本配置/文档。 |
 | `gen_ai.code.lines_deleted` | int | 仅 `measured` 时 | 成功编辑证据中的删除物理行数，非负整数。 |
 | `gen_ai.code.files_changed` | int | 仅 `measured` 时 | 本次操作修改的文件数；累加后是文件修改次数，不是跨操作去重文件数。 |
+| `gen_ai.code.repositories` | array | `measured` 且存在逐文件证据时 | Pilot 扩展仓库数字分项 `{id,name,added,deleted,files}`，依据实际修改文件归属；同远端 worktree 合并。`id=unknown` 表示归属未知，分项行数之和必须等于操作总计。不包含文件内容或文件路径。 |
 | `gen_ai.code.change_reason` | string | 缺少证据或失败时 | 稳定的诊断原因，不包含源码。以上是 Pilot 扩展，不属于 OpenTelemetry 标准语义约定。 |
 | `gen_ai.tool.call.duration` | int | Recommended | 使用匹配的 result 边界减去 call 边界得到的正数工具执行耗时，单位毫秒；任一边界缺失或差值非正时省略。 |
 | `gen_ai.guardrail.triggered` | boolean | 命中内存拦截判定时 Required | 固定为 `true`。没有 tool call id、没有记录、记录已过期，或 interceptor 未开启时省略。 |

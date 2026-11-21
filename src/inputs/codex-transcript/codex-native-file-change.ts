@@ -3,6 +3,7 @@ import { buildAgentActivityEntry } from '../../normalization/entry-builder.js';
 import type { AgentActivityEntry, JsonValue } from '../../types/index.js';
 
 export interface NativeFileChangeCursor {
+  version?: number;
   inode: number;
   offset: number;
   owner?: string;

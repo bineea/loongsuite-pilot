@@ -34,6 +34,10 @@
     .code-table .code-deleted { color: #fda4af; }
     .code-table .code-unknown { color: var(--warn); }
     .code-note { color: var(--muted); font-size: 12px; line-height: 1.7; margin: 12px 0 0; }
+    .code-repository-details { padding: 12px; border-left: 2px solid var(--accent); background: rgba(125, 211, 252, .035); }
+    .code-repository-details label { display: flex; align-items: center; gap: 12px; font-size: 13px; }
+    .code-repository-details select { max-width: 480px; }
+    .code-repository-details .code-note { white-space: normal; text-align: left; }
     body {
       margin: 0;
       min-height: 100vh;
@@ -198,6 +202,12 @@
         toolCalls: '工具调用数',
         agentDistribution: 'Agent 分布',
         codeChangesHeading: 'AI 文件增删行 · 按 Agent',
+        codeShowDetails: '查看明细',
+        codeHideDetails: '收起明细',
+        codeRepository: '所属仓库',
+        codeAllRepositories: '全部仓库',
+        codeUnknownRepository: '仓库未确定',
+        codeRepositoryNote: '明细按实际修改文件归属仓库。跨仓库操作在各仓库分别计一次，操作次数不可直接相加；新增、删除行数与 Agent 总计一致。',
         codeStartDate: '开始日期',
         codeEndDate: '结束日期',
         codeDateRange: '{start} 至 {end}（包含首尾两天）· 可查询：{min} 至 {max}',
@@ -262,6 +272,12 @@
         toolCalls: 'Tool calls',
         agentDistribution: 'Agent Distribution',
         codeChangesHeading: 'AI File Line Changes · By Agent',
+        codeShowDetails: 'View details',
+        codeHideDetails: 'Hide details',
+        codeRepository: 'Repository',
+        codeAllRepositories: 'All repositories',
+        codeUnknownRepository: 'Repository unknown',
+        codeRepositoryNote: 'Repositories are resolved from the edited files. A cross-repository operation counts once per involved repository; operation counts are not additive. Added and deleted lines sum to the Agent totals.',
         codeStartDate: 'Start date',
         codeEndDate: 'End date',
         codeDateRange: '{start} to {end} (both dates included) · Available: {min} to {max}',
@@ -355,6 +371,8 @@
     let currentSummary = null;
     let codeStartDate = null;
     let codeEndDate = null;
+    const codeExpandedAgents = new Set();
+    const codeRepositoryFilters = new Map();
     let viewState = { kind: 'connecting' };
     const $ = (id) => document.getElementById(id);
 
@@ -572,6 +590,7 @@
         start: codeStartDate, end: codeEndDate, min: history.startDate, max: history.endDate,
       });
       const agents = new Map();
+      const repositories = new Map();
       const metrics = ['addedLines', 'deletedLines', 'filesChanged', 'measuredOperations', 'unmeasuredOperations', 'failedOperations'];
       for (const day of history.days) {
         if (day.day < codeStartDate || day.day > codeEndDate) continue;
@@ -579,6 +598,14 @@
           const total = agents.get(entry.agentType) ?? { agentType: entry.agentType };
           for (const key of metrics) total[key] = (total[key] ?? 0) + (Number(entry[key]) || 0);
           agents.set(entry.agentType, total);
+        }
+        const details = Array.isArray(day.repositoryChanges) ? day.repositoryChanges
+          : day.codeChanges.map(entry => ({...entry, repositoryId:'unknown', repositoryName:''}));
+        for (const entry of details) {
+          const key = JSON.stringify([entry.agentType, entry.repositoryId]);
+          const total = repositories.get(key) ?? { agentType:entry.agentType, repositoryId:entry.repositoryId, repositoryName:entry.repositoryName };
+          for (const metric of metrics) total[metric] = (total[metric] ?? 0) + (Number(entry[metric]) || 0);
+          repositories.set(key,total);
         }
       }
       const changes = [...agents.values()].sort((a, b) => a.agentType.localeCompare(b.agentType));
@@ -588,16 +615,33 @@
       }
       const headers = ['codeAdded', 'codeDeleted', 'codeNet', 'codeFiles', 'codeMeasured', 'codeUnmeasured', 'codeFailed'];
       const signed = value => value > 0 ? `+${count(value)}` : value < 0 ? `−${count(-value)}` : count(0);
-      $('code-changes').innerHTML = `<table class="code-table"><thead><tr><th scope="col">Agent</th>${headers.map(key => `<th scope="col">${escapeHtml(translate(key))}</th>`).join('')}</tr></thead><tbody>${changes.map(entry => {
+      const cells = entry => {
         const measured = Number(entry.measuredOperations) > 0;
-        return `<tr><th scope="row">${escapeHtml(entry.agentType)}</th>
-          <td class="code-added">${measured ? signed(entry.addedLines) : '—'}</td>
+        return `<td class="code-added">${measured ? signed(entry.addedLines) : '—'}</td>
           <td class="code-deleted">${measured ? signed(-entry.deletedLines) : '—'}</td>
           <td>${measured ? signed(entry.addedLines - entry.deletedLines) : '—'}</td>
           <td>${measured ? count(entry.filesChanged) : '—'}</td>
           <td>${count(entry.measuredOperations)}</td>
           <td class="${Number(entry.unmeasuredOperations) > 0 ? 'code-unknown' : ''}">${count(entry.unmeasuredOperations)}</td>
-          <td>${count(entry.failedOperations)}</td></tr>`;
+          <td>${count(entry.failedOperations)}</td>`;
+      };
+      const tableHeaders = headers.map(key => `<th scope="col">${escapeHtml(translate(key))}</th>`).join('');
+      $('code-changes').innerHTML = `<table class="code-table"><thead><tr><th scope="col">Agent</th>${tableHeaders}<th scope="col">${escapeHtml(translate('codeShowDetails'))}</th></tr></thead><tbody>${changes.map((entry,index) => {
+        const expanded = codeExpandedAgents.has(entry.agentType);
+        const agent = escapeHtml(entry.agentType);
+        const row = `<tr><th scope="row">${agent}</th>${cells(entry)}<td><button type="button" data-code-agent="${agent}" aria-expanded="${expanded}" aria-controls="code-repos-${index}">${escapeHtml(translate(expanded?'codeHideDetails':'codeShowDetails'))}</button></td></tr>`;
+        if (!expanded) return row;
+        const details = [...repositories.values()].filter(part=>part.agentType===entry.agentType).sort((a,b)=>a.repositoryId.localeCompare(b.repositoryId));
+        let selected = codeRepositoryFilters.get(entry.agentType) ?? '';
+        if (!details.some(part=>part.repositoryId===selected)) selected = '';
+        codeRepositoryFilters.set(entry.agentType,selected);
+        const name = part => part.repositoryId === 'unknown' ? translate('codeUnknownRepository') : part.repositoryName;
+        const options = `<option value="">${escapeHtml(translate('codeAllRepositories'))}</option>` + details.map(part=>`<option value="${escapeHtml(part.repositoryId)}" ${selected===part.repositoryId?'selected':''}>${escapeHtml(name(part))}</option>`).join('');
+        const visible = selected ? details.filter(part=>part.repositoryId===selected) : details;
+        return row + `<tr><td colspan="9"><div id="code-repos-${index}" class="code-repository-details">
+          <label>${agent} · ${escapeHtml(translate('codeRepository'))} <select data-code-repository-agent="${agent}">${options}</select></label>
+          <table class="code-table"><thead><tr><th scope="col">${escapeHtml(translate('codeRepository'))}</th>${tableHeaders}</tr></thead><tbody>${visible.map(part=>`<tr><th scope="row">${escapeHtml(name(part))}</th>${cells(part)}</tr>`).join('')}</tbody></table>
+          <p class="code-note">${escapeHtml(translate('codeRepositoryNote'))}</p></div></td></tr>`;
       }).join('')}</tbody></table>`;
     }
 
@@ -682,6 +726,19 @@
 
     $('code-start').addEventListener('change', event => {
       codeStartDate = event.target.value;
+      if (currentSummary) renderCodeChanges(currentSummary);
+    });
+    $('code-changes').addEventListener('click', event => {
+      const button = event.target.closest('button[data-code-agent]');
+      if (!button) return;
+      const agent = button.dataset.codeAgent;
+      if (codeExpandedAgents.has(agent)) codeExpandedAgents.delete(agent); else codeExpandedAgents.add(agent);
+      if (currentSummary) renderCodeChanges(currentSummary);
+    });
+    $('code-changes').addEventListener('change', event => {
+      const agent = event.target.dataset.codeRepositoryAgent;
+      if (!agent) return;
+      codeRepositoryFilters.set(agent,event.target.value);
       if (currentSummary) renderCodeChanges(currentSummary);
     });
     $('code-end').addEventListener('change', event => {

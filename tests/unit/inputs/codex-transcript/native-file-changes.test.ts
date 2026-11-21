@@ -60,6 +60,13 @@ it('排除工作区不会从原生文件回执泄漏计量事件', async () => {
   const s=await setup();s.input.setWorkspacePolicy(new WorkspacePolicy([s.root]));
   await s.write([s.meta,native()]);await s.scan();expect(s.entries).toEqual([]);
 });
+it('旧版原生游标升级后补充仓库证据，操作身份保持不变', async () => {
+  const s=await setup();await s.write([s.meta,native()]);await s.scan();
+  const key=(s.input as any).stateKey(s.file);const old=s.store.get(key);
+  s.store.update(key,{extra:{...old.extra,codexFileChanges:{...(old.extra?.codexFileChanges as object),version:undefined}}});
+  await s.scan();expect(s.entries).toHaveLength(2);expect(s.entries[0]['event.id']).toBe(s.entries[1]['event.id']);
+  await s.scan();expect(s.entries).toHaveLength(2);
+});
 it('原生多文件与多 hunk 分别计数，同名文件不把多个 hunk 计成多文件', async () => {
   const s=await setup();await s.write([s.meta,native('exec-many','completed',{
     'a.ts':change({unified_diff:'@@ -1 +1 @@\n-old\n+new\n@@ -4,0 +5 @@\n+extra\n'}),
