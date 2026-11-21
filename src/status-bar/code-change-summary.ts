@@ -76,7 +76,7 @@ export async function refreshCodeChanges(
         const previous = state.observations[key];
         if (!previous || (previous.status === 'unmeasured' && observation.status === 'measured')
           || (previous.status !== 'failed' && observation.status === 'failed')) {
-          state.observations[key] = { ...observation, day: previous?.day ?? day };
+          state.observations[key] = { ...observation, day: previous?.day ?? observation.day };
         }
       },
     });
@@ -147,6 +147,15 @@ async function readAnchor(file: string, offset: number): Promise<string> {
 
 function parseObservation(record: Record<string, unknown>, day: string): Observation | null {
   if (record['event.name'] !== 'tool.result' && record['event.name'] !== 'gen_ai.tool.result') return null;
+  // 原生文件回执可能在升级后补采，归属编辑发生日而非当前输出文件日期。
+  if (record['gen_ai.tool.name'] === 'codex_file_change') {
+    const nanos = String(record.time_unix_nano ?? '');
+    if (!/^\d{1,20}$/.test(nanos)) return null;
+    const timestamp = Number(BigInt(nanos) / 1_000_000n);
+    const date = new Date(timestamp);
+    if (!Number.isFinite(date.getTime())) return null;
+    day = [date.getFullYear(), String(date.getMonth()+1).padStart(2,'0'), String(date.getDate()).padStart(2,'0')].join('-');
+  }
   let status = record['gen_ai.code.change_status'];
   if (status === 'not_applicable') return null;
   if (status === undefined) {

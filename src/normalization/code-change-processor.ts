@@ -193,6 +193,48 @@ function nativeEvidence(
   return { counts };
 }
 
+/** 桌面端实际应用后的 unified diff；校验每个 hunk 的长度，拒绝截断证据。 */
+function desktopEvidence(result: Record<string, JsonValue> | undefined): Evidence {
+  const changes = object(result?.changes);
+  if (!changes || Object.keys(changes).length === 0) return { reason: 'missing_patch' };
+  if (Buffer.byteLength(JSON.stringify(changes)) > MAX_PATCH_BYTES) return { reason: 'evidence_too_large' };
+  const counts: Counts = { added: 0, deleted: 0, files: 0 };
+  const budget = { remaining: 1_000_000 };
+  for (const value of Object.values(changes)) {
+    const change = object(value);
+    if (change?.type !== 'update' || change.move_path) return { reason: 'missing_original_content' };
+    if (typeof change.unified_diff !== 'string') return { reason: 'missing_patch' };
+    if (change.unified_diff === '') continue;
+    const lines = change.unified_diff.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n');
+    let index = 0;
+    let changed = false;
+    while (index < lines.length) {
+      const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$/.exec(lines[index++]);
+      if (!header) return { reason: 'invalid_patch' };
+      const oldCount = Number(header[2] ?? 1), newCount = Number(header[4] ?? 1);
+      if (!Number.isSafeInteger(oldCount) || !Number.isSafeInteger(newCount)) return { reason: 'invalid_patch' };
+      const hunk: string[] = [];
+      let oldSeen = 0, newSeen = 0;
+      while (index < lines.length && !lines[index].startsWith('@@ ')) {
+        const line = lines[index++];
+        if (line === '\\ No newline at end of file') continue;
+        if (!/^[ +\-]/.test(line)) return { reason: 'invalid_patch' };
+        if (line[0] !== '+') oldSeen++;
+        if (line[0] !== '-') newSeen++;
+        hunk.push(line);
+      }
+      if (oldSeen !== oldCount || newSeen !== newCount) return { reason: 'invalid_patch' };
+      const evidence = changedLines(hunk, budget);
+      if (!evidence.counts) return evidence;
+      counts.added += evidence.counts.added;
+      counts.deleted += evidence.counts.deleted;
+      changed ||= evidence.counts.files > 0;
+    }
+    if (changed) counts.files++;
+  }
+  return { counts };
+}
+
 /** 只缓存有界数字证据，结果重放可复用调用；不保留源码或读取工作区文件。 */
 export class CodeChangeProcessor {
   private readonly calls = new Map<
@@ -241,6 +283,10 @@ export class CodeChangeProcessor {
       const name = this.toolName(entry['gen_ai.tool.name'] ?? call?.name);
       const payload = entry['gen_ai.tool.call.result'];
       const result = object(payload);
+      if (name === 'codex_file_change') {
+        // 原始 diff 只用于内存计量，持久化输出保留来源和数字，不复制用户源码。
+        entry['gen_ai.tool.call.result'] = { source: 'codex.item_completed.FileChange' };
+      }
       const text =
         typeof result?.output === 'string'
           ? result.output
@@ -279,7 +325,10 @@ export class CodeChangeProcessor {
       let evidence: Evidence = {
         reason: call ? 'unsupported_tool' : 'missing_call',
       };
-      if (name === 'apply_patch') {
+      if (name === 'codex_file_change') {
+        evidence = entry['tool.result.status'] === 'success'
+          ? desktopEvidence(result) : { reason: 'missing_success_evidence' };
+      } else if (name === 'apply_patch') {
         evidence = /^Success\. Updated the following files:\r?\n/m.test(text)
           ? (call?.evidence ?? { reason: 'missing_call' })
           : { reason: 'missing_success_evidence' };

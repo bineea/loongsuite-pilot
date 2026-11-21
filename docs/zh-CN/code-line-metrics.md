@@ -17,12 +17,15 @@
 | 来源 | 可测量证据 | 无法确认时 |
 |---|---|---|
 | Codex `apply_patch` | 调用中的完整 `Update File` 补丁 + 对应结果明确成功；统计更新补丁中的新增、删除行 | `Add File` 与 `Move to` 均可能覆盖已有目标文件，缺少目标原文时与整文件删除一样标为未测量；失败不计 |
+| Codex Desktop 内层文件编辑 | 原生 `item_completed / FileChange`、`exec-` 操作 ID、成功状态与完整 `update.unified_diff`；支持外层 `exec` 包裹的编辑和子 Agent | 没有原生回执、差异截断、创建/删除缺少原文或涉及移动时仍不猜测 |
 | Claude Code `Edit` | 成功结果中的原生 `structuredPatch` | 只有替换参数而没有实际应用结果，不猜测替换次数 |
 | Claude Code `Write` | 明确的原生创建结果及内容，或覆盖结果中的差异 | 旧文件覆盖缺少原文/差异，标为未测量 |
 | 其他 Agent | 相同的成功编辑证据格式由统一处理器识别 | 不支持的工具格式标为未测量，可继续扩展解析器 |
-| Shell / Bash / PowerShell / code-mode `exec` | 当前不执行脚本，也不推断脚本是否写入 | 标为未测量；嵌套在 `exec` 中的编辑不能等同于独立 `apply_patch` |
+| Shell / Bash / PowerShell / code-mode `exec` | 不执行或解析脚本推断写入；桌面端有独立原生 `FileChange` 回执时按上一行计量 | 外层调用仍可显示未测量；没有原生文件差异的脚本写入无法计量 |
 
 处理器不读取工作区当前文件来猜测历史修改前内容，也不把整个 Git 工作区的人工修改归给 AI。终端脚本和未支持 Agent 的完整覆盖，需要后续增加可靠的操作前后快照或原生编辑事件。
+
+桌面端原生文件事件使用独立增量游标，可补采普通会话游标已越过的历史回执，无需删除旧日志或重置 Token 采集。仅扫描已发现且标记为 `Codex Desktop` 的本地 JSONL，按事件所属线程及操作 ID 去重，忽略子 Agent 中的祖先事件副本；直接工具调用的镜像沿用原采集路径，避免双计。补采归属原编辑发生日，最多覆盖当前日及此前 200 天；已压缩或已清理的源记录不在此补采范围。原生 diff 只在内存中计量，输出保留数字和来源标识。没有差异证据的旧输出不能恢复，但仍保留原生回执的历史记录可以补采。
 
 更新补丁使用行级差异消除替换块中的共同内容，包括重复行和空行。每次操作最多计算 100 万个差异单元，单份证据上限 2 MiB；超出预算标为未测量，不退回不准确的估算。一份混合补丁中若有无法测量的文件，整个操作标为未测量，避免把局部计数伪装成完整结果。
 
@@ -57,7 +60,7 @@ Dashboard 的“AI 文件增删行 · 按 Agent”表支持自选开始日期和
 ```powershell
 npm.cmd ci
 npm.cmd run typecheck
-npm.cmd test -- tests/unit/normalization/code-change-processor.test.ts tests/unit/status-bar/code-change-summary.test.ts tests/unit/status-bar/metrics-summary-writer.test.ts tests/unit/dashboard
+npm.cmd test -- tests/unit/inputs/codex-transcript tests/unit/normalization/code-change-processor.test.ts tests/unit/status-bar/code-change-summary.test.ts tests/unit/status-bar/metrics-summary-writer.test.ts tests/unit/dashboard tests/integration/code-line-metrics.test.ts
 npm.cmd run build
 ```
 

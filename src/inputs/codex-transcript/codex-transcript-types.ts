@@ -158,6 +158,7 @@ export interface CodexTranscriptCheckpoint {
 }
 
 export interface CodexTranscriptMeta {
+  originator?: string;
   /** The Codex thread/rollout described by this session_meta record. */
   threadId: string;
   /** Root user session shared by a subagent tree when Codex supplies it. */
