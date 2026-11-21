@@ -61,7 +61,7 @@ Pilot 主要帮助回答这些问题：
 - **桌面端编辑**：Codex Desktop 在外层 `exec` 内执行的编辑，若记录了成功的原生 `FileChange` 更新差异，可单独计量；外层 `exec` 仍可能显示未测量。
 - **历史数据**：保留了原生桌面端文件回执的本地 JSONL 可增量补采，并按原编辑日期去重汇总；已缺失差异或清理的记录无法补算。
 
-**安装增强版**：本 README 的默认安装命令指向上游发行版，不能据此确认包含本 fork 的增强。请使用[本 fork 的增强分支](https://github.com/bineea/loongsuite-pilot/tree/feat/agent-code-line-metrics)构建、打包并通过安装器部署，同时更新 Agent Hook、重启采集服务。仅拉取源码或运行构建不会更新本机服务。现有安装应先备份配置并保留旧版本用于回滚。
+**安装增强版**：本 README 的默认安装命令指向上游发行版，不能据此确认包含本 fork 的增强。请使用[本 fork 的 `main` 分支](https://github.com/bineea/loongsuite-pilot/tree/main)构建、打包并通过安装器部署，同时更新 Agent Hook、重启采集服务。仅拉取源码或运行构建不会更新本机服务。现有安装应先备份配置并保留旧版本用于回滚。
 
 详细支持边界、汇总数据结构和构建验证步骤见[文件增删行统计说明](docs/zh-CN/code-line-metrics.md)。
 
